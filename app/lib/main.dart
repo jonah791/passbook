@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'core/vault_controller.dart';
-import 'pages/unlock_page.dart';
+import 'pages/home_page.dart';
 
 /// 全局唯一的库控制器（这个应用只开一个库）。
 final vault = VaultController();
@@ -22,7 +22,7 @@ class PassbookApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7D6F)),
         useMaterial3: true,
       ),
-      home: const UnlockPage(),
+      home: HomePage(vault: vault),
     );
   }
 }
