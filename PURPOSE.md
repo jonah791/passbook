@@ -3,19 +3,21 @@
 ## 目标
 
 一个**本地优先、零外联**的跨平台密码管理器。Windows 与 Android 优先，数据用标准 KDBX 4 文件。
+交互按**便签应用**的心智做：打开即列表、点加号就能记、输入即存，不需要学。
 
 ## 出处
 
 主人 2026-11-26 11:05 原话：「要不然我们自建一个跨平台密码本」。
+11:25 追加定调：「降低使用复杂度，对标主流便签应用」。
 背景：审计 keestone（外联少但依赖第三方库、功能单薄）与 Monica 三仓（设计强但重、GPL、默认向 Google 发域名清单）之后的自主选择。
 
 ## 边界（第一版）
 
 **做**
 - 新建 / 打开 / 保存 KDBX 4 文件（主密码，后续加密钥文件）
-- 分组树 + 条目列表 + 详情编辑（标题 / 用户名 / 密码 / 网址 / 备注）
-- 搜索、复制（剪贴板定时清除）
-- 自动锁定、手动保存
+- 条目列表 + 全屏编辑（标题 / 正文 / 用户名 / 密码 / 网址）
+- 搜索、复制（剪贴板 30 秒后自动清空）
+- 自动保存（输入即存）、自动锁定（5 分钟无操作）、密码生成器
 - 标准 KDBX：KeePassXC / 手机端 KeePass 能直接打开，数据不锁定
 
 **不做**
@@ -28,16 +30,32 @@
 
 | 选择 | 理由 |
 |---|---|
-| Flutter + Dart | 一套代码覆盖 Windows / Linux / macOS / Android / iOS；本机已装 Flutter 3.47 |
+| Flutter + Dart | 一套代码覆盖 Windows / Linux / macOS / Android / iOS；本机 Flutter 3.41.9 / Dart 3.11.5 |
 | `kpasslib`（MIT） | 纯 Dart 的 KDBX 3/4 读写，Argon2id + AES-KDF，无原生依赖 |
 | 标准 KDBX 4 | 数据可迁移是硬要求；不用自有格式，避免 Monica 那种「只有它的客户端能读」 |
 
 ## 判据（可证伪）
 
-1. 新建一个库 → 保存 → 用 KeePassXC 能打开，条目与密码一致
+**数据与安全**
+1. 新建一个库 → 保存 → 用 KeePassXC 能打开，条目与密码一致（`app/test/kdbx_roundtrip_test.dart`）
 2. 全程抓包：除用户主动打开的网址外无任何出网连接
 3. 冷启动 → 解锁 → 复制密码，剪贴板 30 秒后自动清空
-4. Windows 与 Android 两个平台都能完成上述三条
+4. 解锁后 5 分钟无任何键鼠动作 → 锁回解锁页；锁定前正在编辑的内容必须已落盘
+   （`app/test/idle_guard_test.dart` + `app/test/vault_flush_test.dart`，后者含负样本：
+   没 flush 就 close 必须真的丢，否则那条 flush 就是装饰）
+5. 生成的密码四类字符各至少一个、不含 0 O 1 l I（`app/test/password_gen_test.dart`）
+6. Windows 与 Android 两个平台都能完成上述各条
+
+**体验**
+- 首次使用只设一个主密码，库固定放文档目录 `passbook.kdbx`，不让人选文件
+- 输入即保存（800ms 防抖）；返回列表 / 窗口失焦 / 自动锁定都会先落盘，不丢字
+- 解锁后光标已在搜索框；Ctrl+F 搜索 / Ctrl+N 新建 / Ctrl+L 锁定 / Esc 返回
+- 每个版本必须过：`flutter analyze` 0 issues · `flutter test` 全绿 · `flutter build windows`
+
+## 待主人定夺
+
+- **全局热键 Ctrl+Alt+P 唤起**：要它就得后台托盘常驻（关窗不退、多一个常驻进程）。
+  这是形态变化，不是复杂度降低，所以这一版没做。要做我加。
 
 ## 平台顺序
 
@@ -45,5 +63,5 @@ Windows（先跑通）→ Android → Linux / macOS（架构上留好，不急�
 
 ## 目录
 
-- `app/` — Flutter 应用
+- `app/` — Flutter 应用（`lib/core/` 逻辑、`lib/pages/` 界面、`test/` 判据）
 - `docs/` — 设计决定与判据
