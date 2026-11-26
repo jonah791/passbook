@@ -461,11 +461,17 @@ class VaultController extends ChangeNotifier implements VaultBridge {
       ),
     );
 
-    // 对端根本是**另一个库**（根分组 uuid 不同）时只有一条路是对的：
-    // 本地还一条都没记 ⇒ 把对端整库接下来（新设备第一次同步就是这样）；
-    // 本地有内容 ⇒ 拒绝，并且说清楚——绝不能悄悄拿对端把本地顶掉。
+    // 对端根本是**另一个库**（根分组 uuid 不同）时，谁该让步只看一件事：
+    // 哪边还有东西可丢。三种情形分开处理，别用一条规则糊过去——
+    //   ① 本地一条都没有 ⇒ 整库接下对端的（新设备第一次同步就是这条）
+    //   ② **对端一条都没有** ⇒ 这边什么也不用变：拉取后的下一步会把本地的库
+    //      推回去，对端那时会走 ① 接管下来。两边就这么自动对齐了。
+    //      早先这里直接报错，结果「有内容的那台」被拦在门外，人还得手动跑到
+    //      空库那台上反向操作一次——明明没有任何数据会丢，却要人做决定。
+    //   ③ 两边都有内容 ⇒ 才是真的冲突：拒绝，并说清为什么。
     if (remote.root.uuid != db.root.uuid) {
       final localCount = db.root.allEntries.length;
+      final remoteCount = remote.root.allEntries.length;
       if (localCount == 0) {
         _db = remote;
         _dirty = true;
@@ -473,17 +479,27 @@ class VaultController extends ChangeNotifier implements VaultBridge {
         notifyListeners();
         return MergeResult(
           before: 0,
-          after: remote.root.allEntries.length,
-          added: remote.root.allEntries.length,
+          after: remoteCount,
+          added: remoteCount,
           removed: 0,
           adopted: true,
         );
       }
+      if (remoteCount == 0) {
+        // 对端空库：它没有内容会丢，我们也不必改自己。合并这一步等于空转，
+        // 真正的搬运发生在 pullFrom 的后半段（把本地库推过去让它接管）。
+        return MergeResult(
+          before: localCount,
+          after: localCount,
+          added: 0,
+          removed: 0,
+          adopted: false,
+        );
+      }
       throw StateError(
-        '两边的库不是同一个（根分组 UUID 不同）：本地 $localCount 条，'
-        '对端 ${remote.root.allEntries.length} 条。'
-        '本机这条库已经有内容，不能用对端的库顶掉——'
-        '先在空库的那台设备上连过来接管，之后再改就没关系了。',
+        '两边的库不是同一个（根分组 UUID 不同），而且各自都有内容：'
+        '本地 $localCount 条，对端 $remoteCount 条。'
+        '合并不了——请先把其中一边导成备份文件，再在另一边用「从文件合并」并进来。',
       );
     }
 

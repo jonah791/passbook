@@ -235,6 +235,35 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('对端是空库时不该报错：本地不变，搬运交给「推回去」那一步', () async {
+    final dir = Directory.systemTemp.createTempSync('passbook_empty_peer');
+    final sep = Platform.pathSeparator;
+
+    final mine = VaultController();
+    await mine.createAt('${dir.path}${sep}mine.kdbx', 'same-pw');
+    for (final t in ['我的第一条', '我的第二条']) {
+      final e = mine.addEntry();
+      mine.updateField(e, 'Title', t);
+    }
+    await mine.save();
+
+    // 另一台刚建的空库，根分组 uuid 与本地不同
+    final blank = VaultController();
+    await blank.createAt('${dir.path}${sep}blank.kdbx', 'same-pw');
+    expect(blank.allEntries, isEmpty);
+
+    final result = await mine.mergeRemote(await blank.exportBytes());
+
+    expect(result.added, 0);
+    expect(result.adopted, isFalse);
+    expect(titlesOf(mine), {'我的第一条', '我的第二条'},
+        reason: '合并空库等于空转，本地一条都不能动');
+
+    mine.close();
+    blank.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('本机已有内容的库，不许被对端整库顶掉', () async {
     final dir = Directory.systemTemp.createTempSync('passbook_refuse');
     final sep = Platform.pathSeparator;

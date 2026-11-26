@@ -140,4 +140,53 @@ void main() {
     b.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('对面是另一个空库：本机有内容也能一次同步对齐', () async {
+    // 这是实测撞到的那一幕：手机记了 15 条，电脑是刚建的空库（另一个库，
+    // 根分组 uuid 不同）。原来的规则在手机上直接报「不许顶掉」，人得自己
+    // 跑到电脑那台反向操作一次——明明没有任何数据会丢。
+    final dir = Directory.systemTemp.createTempSync('passbook_adopt_lan');
+    final sep = Platform.pathSeparator;
+
+    final phone = VaultController();
+    final phonePath = '${dir.path}${sep}phone.kdbx';
+    expect(await phone.createAt(phonePath, 'lan-pw'), isTrue,
+        reason: phone.lastError ?? '');
+    for (final t in ['微信', '邮箱', 'GitHub']) {
+      final e = phone.addEntry();
+      phone.updateField(e, 'Title', t);
+    }
+    await phone.save();
+
+    final pc = VaultController();
+    final pcPath = '${dir.path}${sep}pc.kdbx';
+    expect(await pc.createAt(pcPath, 'lan-pw'), isTrue,
+        reason: pc.lastError ?? '');
+    expect(pc.allEntries, isEmpty);
+
+    final server = LanSync(pc);
+    final code = await server.start();
+    final port = server.port!;
+    addTearDown(() async {
+      await server.stop();
+      phone.close();
+      pc.close();
+      dir.deleteSync(recursive: true);
+    });
+
+    final result = await LanSync(phone).pullFrom(
+      host: '127.0.0.1',
+      port: port,
+      code: code,
+    );
+
+    expect(result.added, 0, reason: '空库那头本来就没有东西可并进来');
+    expect(titlesOf(phone).length, 3, reason: '本机的条目一条都不能少');
+    expect(
+      titlesOf(pc),
+      containsAll(['微信', '邮箱', 'GitHub']),
+      reason: '空库那台应当已经接管了本机的库',
+    );
+    expect(pc.allEntries.length, 3);
+  });
 }
