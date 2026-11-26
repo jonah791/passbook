@@ -29,9 +29,11 @@ class _SyncPageState extends State<SyncPage> {
   final _code = TextEditingController();
 
   List<String> _ips = const [];
+  List<DiscoveredPeer> _peers = const [];
   String? _myCode;
   int? _myPort;
   bool _busy = false;
+  bool _scanning = false;
   String? _error;
   MergeResult? _result;
   String? _resultFrom;
@@ -107,6 +109,78 @@ class _SyncPageState extends State<SyncPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('配对码已复制'), duration: Duration(seconds: 2)),
+    );
+  }
+
+  /// 在局域网里找正在等连接的 passbook，省掉抄地址和端口。
+  ///
+  /// 找到的只有地址和端口——**配对码不在里面**，那六位数仍要人看对方屏幕
+  /// 或扫码带过来。发现解决的是「往哪连」，不是「凭什么让你连」。
+  Future<void> _discover() async {
+    setState(() {
+      _scanning = true;
+      _peers = const [];
+      _error = null;
+    });
+    final peers = await LanDiscovery.scan();
+    if (!mounted) return;
+    // 自己这台也会回一个包——剔掉，否则列表第一条就是「连我自己」。
+    final others = peers.where((p) => !_ips.contains(p.host)).toList();
+    setState(() {
+      _scanning = false;
+      _peers = others;
+      if (others.isEmpty) {
+        _error = '没找到别的设备。确认另一台停在同步页上（那页开着才算在等连接），'
+            '并且两台连的是同一个局域网。';
+      }
+    });
+  }
+
+  void _usePeer(DiscoveredPeer peer) {
+    setState(() {
+      _host.text = peer.host;
+      _port.text = '${peer.port}';
+      _peers = const [];
+      _error = null;
+    });
+  }
+
+  Widget _peerRow(ThemeData theme, Color soft, DiscoveredPeer peer) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: InkWell(
+        onTap: (_busy || _scanning) ? null : () => _usePeer(peer),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      peer.name,
+                      style: const TextStyle(fontSize: 14.5),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${peer.host} · 端口 ${peer.port}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: soft,
+                        fontFamily: 'Consolas',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.north_east, size: 15, color: soft),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -257,6 +331,36 @@ class _SyncPageState extends State<SyncPage> {
                           ),
                           const SizedBox(height: 20),
                         ],
+                        // 两端都有的一条路：广播一次，让对面自己冒出来。
+                        // 桌面端没有摄像头，这条是它唯一不用手抄的方式。
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: (_busy || _scanning)
+                                ? null
+                                : () => unawaited(_discover()),
+                            icon: _scanning
+                                ? const SizedBox(
+                                    width: 13,
+                                    height: 13,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.6,
+                                    ),
+                                  )
+                                : const Icon(Icons.wifi_find, size: 16),
+                            label: Text(_scanning ? '正在找…' : '在局域网里找'),
+                          ),
+                        ),
+                        if (_peers.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          ..._peers.map((p) => _peerRow(theme, soft, p)),
+                          const SizedBox(height: 4),
+                          Text(
+                            '点一台就填好地址和端口；六位配对码还得看你另一台屏幕上那个。',
+                            style: TextStyle(fontSize: 12, color: soft),
+                          ),
+                        ],
+                        const SizedBox(height: 20),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [

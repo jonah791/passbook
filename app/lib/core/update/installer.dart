@@ -48,12 +48,23 @@ class WindowsZipInstaller implements UpdateInstaller {
       exe.parent.path,
       exe.path,
     ];
-    final launcher = _launcher ?? _spawnDetached;
+    final launcher = _launcher ?? _spawnUpdater;
     await launcher(args);
   }
 
-  static Future<Process> _spawnDetached(List<String> args) =>
-      Process.start('powershell.exe', args, mode: ProcessStartMode.detached);
+  /// 起更新脚本。
+  ///
+  /// **不能用 `ProcessStartMode.detached`。** 本机实测（2026-11-26）：detached
+  /// 起的子进程会随父进程一起消失——`Process.start` 明明返回了 pid，但 1.5 秒
+  /// 后进程表里已经查不到它，脚本一行都没执行。于是现象是「点更新 → 窗口关了
+  /// → 没有然后」，而下载好的 zip、写出来的脚本、日志全都在位，看上去像什么都
+  /// 没发生。同一个脚本手动跑是通的，所以这个坑只在应用里出现。
+  ///
+  /// 换成 normal 模式即可：子进程在父进程退出后仍然活着（实测起了个 30 秒的
+  /// ping，父进程 0.6 秒后退出，4 秒后 ping 还在）。脚本自己不写 stdout，
+  /// 所以管道随父进程关闭不影响它。
+  static Future<Process> _spawnUpdater(List<String> args) =>
+      Process.start('powershell.exe', args, mode: ProcessStartMode.normal);
 
   /// 脚本本体。五条纪律：
   /// ① 等旧进程真的退出（不等就覆盖被锁的 exe/dll，必失败）

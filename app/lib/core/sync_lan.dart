@@ -29,6 +29,7 @@ class LanSync {
   void Function(MergeResult result)? onMerged;
 
   HttpServer? _server;
+  RawDatagramSocket? _discovery;
   String _code = '';
   Timer? _rotateTimer;
   Future<void> _queue = Future<void>.value();
@@ -97,12 +98,22 @@ class LanSync {
     _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
     _code = code ?? _newCode();
     unawaited(_accept(_server!));
+    // 开着同步就等于「可以被找到」。UDP 起不来（端口被另一个实例占了、
+    // 防火墙不放行）不该牵连 HTTP 那一侧——那样连扫码和手填都一起没了。
+    try {
+      _discovery = await LanDiscovery.announce(syncPort: _server!.port);
+    } catch (_) {
+      _discovery = null;
+    }
     return _code;
   }
 
   Future<void> stop() async {
     _rotateTimer?.cancel();
     _rotateTimer = null;
+    final discovery = _discovery;
+    _discovery = null;
+    discovery?.close();
     final server = _server;
     _server = null;
     _code = '';
@@ -221,6 +232,10 @@ class LanSync {
         throw LanSyncException('合并结果没被接受（${postRes.statusCode}）');
       }
       return result;
+    } on SocketException catch (e) {
+      throw LanSyncException(
+        explainSocketFailure(e, host: host, port: port),
+      );
     } finally {
       client.close(force: true);
     }
@@ -268,6 +283,206 @@ String explainSyncFailure(int status, String body) {
     403 => '：配对码不对，用对端屏幕上此刻显示的那个。',
     _ => '：对方没有说明原因。',
   };
+}
+
+/// 局域网自动发现：一台开着同步，另一台点一下就看到它——不用抄地址和端口。
+///
+/// **只暴露「这个地址上有一台 passbook 在等连接」，不带配对码。**
+/// 配对码仍是唯一的内容授权；发现只解决「往哪连」这一半。
+///
+/// 用 UDP 广播而不是多播：家用路由器几乎都转发受限广播，多播则看配置。
+/// 探测发三次、每次隔 120 毫秒，丢一两个包也不至于一次都收不到。
+class LanDiscovery {
+  /// 发现用的端口，与同步用的 HTTP 端口无关（那个由系统每次随机分配）。
+  static const int udpPort = 37600;
+
+  static const String probeMagic = 'PASSBOOK-DISCOVERY/1';
+  static const String replyMagic = 'PASSBOOK-HERE/1';
+
+  /// 一次扫描等多久。太短会漏掉反应慢的设备，太长让人以为界面卡死了。
+  static const Duration scanWindow = Duration(seconds: 2);
+
+  /// 开始应答探测。返回的 socket 要在停止同步时 close 掉。
+  static Future<RawDatagramSocket> announce({
+    required int syncPort,
+    String? name,
+  }) async {
+    final socket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      udpPort,
+      reuseAddress: true,
+    );
+    var hostName = (name ?? '').trim();
+    if (hostName.isEmpty) {
+      try {
+        hostName = Platform.localHostname;
+      } catch (_) {
+        hostName = '';
+      }
+    }
+    final payload = jsonEncode({
+      'name': _sanitize(hostName),
+      'port': syncPort,
+    });
+    final reply = utf8.encode('$replyMagic $payload');
+    final probe = utf8.encode(probeMagic);
+    socket.listen((event) {
+      if (event != RawSocketEvent.read) return;
+      final datagram = socket.receive();
+      if (datagram == null) return;
+      // 只认自己那一句：局域网里别的程序也会打这个端口。
+      if (!_sameBytes(datagram.data, probe)) return;
+      try {
+        socket.send(reply, datagram.address, datagram.port);
+      } catch (_) {
+        // 对方已经走了，回不回去都不影响它。
+      }
+    });
+    return socket;
+  }
+
+  /// 广播一次探测，收回所有回应。
+  static Future<List<DiscoveredPeer>> scan({
+    Duration window = scanWindow,
+  }) async {
+    final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    final found = <String, DiscoveredPeer>{};
+    try {
+      socket.broadcastEnabled = true;
+    } catch (_) {
+      // 系统不许广播时仍然往下走：收不到就如实报「没找到」。
+    }
+    final sub = socket.listen((event) {
+      if (event != RawSocketEvent.read) return;
+      final datagram = socket.receive();
+      if (datagram == null) return;
+      final peer = DiscoveredPeer.tryParse(
+        datagram.address.address,
+        datagram.data,
+      );
+      if (peer != null) found[peer.key] = peer;
+    });
+    final probe = utf8.encode(probeMagic);
+    for (var i = 0; i < 3; i++) {
+      try {
+        socket.send(probe, InternetAddress('255.255.255.255'), udpPort);
+      } catch (_) {
+        // 广播被拒（有些网络禁用），继续等已经发出去那一发的回应。
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+    await Future<void>.delayed(window);
+    await sub.cancel();
+    socket.close();
+    return found.values.toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
+  static bool _sameBytes(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// 主机名是从网线上来的，按不可信内容处理：控制字符剔掉、长度封顶。
+  static String _sanitize(String raw) {
+    final cleaned = raw.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '').trim();
+    return cleaned.length > 64 ? cleaned.substring(0, 64) : cleaned;
+  }
+}
+
+/// 扫描到的一台设备。
+class DiscoveredPeer {
+  const DiscoveredPeer({
+    required this.host,
+    required this.name,
+    required this.port,
+  });
+
+  /// 回应包的源地址。这个由系统填，对端谎报不了。
+  final String host;
+
+  /// 对方自报的机器名，只用来显示，已剔除控制字符。
+  final String name;
+
+  /// 对方同步页正在监听的端口。
+  final int port;
+
+  /// 去重键：同一台机器可能被多块网卡各回一次。
+  String get key => '$host:$port';
+
+  static DiscoveredPeer? tryParse(String host, Uint8List data) {
+    final String text;
+    try {
+      text = utf8.decode(data, allowMalformed: true).trim();
+    } catch (_) {
+      return null;
+    }
+    if (!text.startsWith(LanDiscovery.replyMagic)) return null;
+    final rest = text.substring(LanDiscovery.replyMagic.length).trim();
+    try {
+      final map = jsonDecode(rest);
+      if (map is! Map) return null;
+      final port = map['port'];
+      if (port is! int || port <= 0 || port > 65535) return null;
+      final rawName = map['name'];
+      final name = rawName is String ? LanDiscovery._sanitize(rawName) : '';
+      return DiscoveredPeer(
+        host: host,
+        name: name.isEmpty ? host : name,
+        port: port,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Socket 层的失败翻译成能动手的话。
+///
+/// 界面原来直接把 `SocketException: No route to host ... errno = 113` 摊出来，
+/// 那串东西对使用者零信息量——它既不说「哪一步错了」，也不说「该改什么」。
+///
+/// errno 在 Windows 与 Linux/Android 上不是一套编码（同样是「连不上」，
+/// 一边是 10061，另一边是 111），所以两套码 + 英文关键词一起判；
+/// 都匹配不到时至少把原始 errno 留着，别把它吞掉。
+String explainSocketFailure(
+  SocketException e, {
+  required String host,
+  required int port,
+}) {
+  final os = e.osError;
+  final code = os?.errorCode ?? 0;
+  final message = (os?.message ?? e.message).toLowerCase();
+  final refused = code == 10061 || code == 111 ||
+      message.contains('refused') ||
+      message.contains('拒绝');
+  final unreachable = code == 10065 || code == 10051 || code == 113 ||
+      code == 101 ||
+      message.contains('route') ||
+      message.contains('unreachable') ||
+      message.contains('不可达');
+  final timedOut = code == 10060 || code == 110 ||
+      message.contains('timed out') ||
+      message.contains('timeout');
+  if (refused) {
+    return '连不上 $host:$port —— 这个端口上没有服务在听。'
+        '最可能是对方不在同步页上（那页开着才算在等连接），'
+        '或者端口填成了上一次的。';
+  }
+  if (unreachable) {
+    return '连不上 $host:$port —— 这个地址在你的网络里到不了。'
+        '常见三种：两台设备不在同一个局域网、这台设备开着 VPN'
+        '（VPN 会把局域网流量也带走）、或者填的是对方一块不在线的网卡地址。';
+  }
+  if (timedOut) {
+    return '连 $host:$port 超时 —— 包发出去了没有回应，通常是防火墙把它拦下了。'
+        '在对方那台机器上让 passbook 通过防火墙的专用网络。';
+  }
+  final raw = os?.message ?? e.message;
+  return '连不上 $host:$port（$raw${code == 0 ? '' : '，错误码 $code'}）';
 }
 
 /// 一次配对邀请：对端拿到这三样就能连。
