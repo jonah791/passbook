@@ -56,10 +56,51 @@ class VaultController extends ChangeNotifier {
     await prefs.setString(_prefsKey, path);
   }
 
-  /// 默认库位置：文档目录/passbook.kdbx（用户不需要选文件）。
+  /// 默认库位置：优先用户可见的文档目录（方便丢进网盘同步、方便在手机上打开），
+  /// 写不了再退到应用数据目录。
+  ///
+  /// 「能不能写」必须**实测**：这台机器开着 Windows 受控文件夹访问（CFA），
+  /// 文档目录读得到、列得出，写进去却报「系统找不到指定的文件」。
+  /// 只看目录存不存在会误判成可用，于是用户第一次建库就撞墙。
   Future<String> defaultVaultPath() async {
-    final dir = await getApplicationDocumentsDirectory();
-    return '${dir.path}${Platform.pathSeparator}passbook.kdbx';
+    final candidates = <String>[];
+    for (final getter in [
+      getApplicationDocumentsDirectory,
+      getApplicationSupportDirectory,
+    ]) {
+      try {
+        candidates.add((await getter()).path);
+      } catch (_) {
+        // 拿不到这个目录就当它不存在，试下一个。
+      }
+    }
+    final picked = await pickWritable(candidates);
+    if (picked == null) {
+      throw StateError('没有可写目录：文档与应用数据目录都写不进去');
+    }
+    return picked;
+  }
+
+  /// 在候选目录里挑第一个**真的能写**的，返回库文件完整路径；都不行返回 null。
+  ///
+  /// 必须是实测而不是「目录存在就算数」：见 [defaultVaultPath] 的注释。
+  static Future<String?> pickWritable(
+    List<String> candidates, {
+    String fileName = 'passbook.kdbx',
+  }) async {
+    final sep = Platform.pathSeparator;
+    for (final dirPath in candidates) {
+      final probe = File('$dirPath${sep}passbook-write-probe.tmp');
+      try {
+        await probe.parent.create(recursive: true);
+        await probe.writeAsBytes(const [0], flush: true);
+        await probe.delete();
+        return '$dirPath$sep$fileName';
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
   }
 
   /// 首次使用：在默认位置创建库。返回是否成功。
@@ -86,7 +127,7 @@ class VaultController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _lastError = e.toString();
+      _lastError = _humanizeWrite(e);
       notifyListeners();
       return false;
     }
@@ -109,10 +150,34 @@ class VaultController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _lastError = '主密码不对，或文件不是 KDBX 库。';
+      final s = e.toString();
+      final missing =
+          s.contains('PathNotFound') ||
+          s.contains('系统找不到') ||
+          s.contains('errno = 2');
+      _lastError = missing
+          ? '库文件不在那个位置了（可能被移动、删除，或被系统拦住）。'
+          : '主密码不对，或文件不是 KDBX 库。';
       notifyListeners();
       return false;
     }
+  }
+
+  /// 系统错误说人话。把 `PathNotFoundException ... errno = 2` 原样甩给用户
+  /// 等于没说——Windows 被「受控文件夹访问」拦住时报的就是「找不到文件」。
+  static String _humanizeWrite(Object error) {
+    final s = error.toString();
+    if (s.contains('errno = 2') ||
+        s.contains('PathNotFound') ||
+        s.contains('系统找不到')) {
+      return '写不进去：这个目录被系统拦住了。\n'
+          '多半是 Windows「受控文件夹访问」开着——在 安全中心 → 病毒和威胁防护 → '
+          '受控文件夹访问 里放行即可。';
+    }
+    if (s.contains('errno = 5') || s.contains('拒绝访问') || s.contains('denied')) {
+      return '写不进去：没有这个目录的写权限。';
+    }
+    return '保存失败：$s';
   }
 
   Future<void> save() async {
@@ -121,6 +186,8 @@ class VaultController extends ChangeNotifier {
     if (db == null || path == null) return;
     final data = await db.save();
     final temp = File('$path.tmp');
+    // 目录可能在运行期间被删掉或挪走；写之前确保它在，否则报的错会误导人。
+    await temp.parent.create(recursive: true);
     await temp.writeAsBytes(data, flush: true);
     if (await File(path).exists()) {
       await File(path).delete();

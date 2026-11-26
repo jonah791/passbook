@@ -125,6 +125,16 @@ class _HomePageState extends State<HomePage> {
       _confirm.clear();
       widget.idleGuard.arm();
       _focusSearchSoon();
+      // 库放在哪必须让他知道：目录可能不是他默认以为的那一个。
+      final where = widget.vault.filePath;
+      if (where != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('库已建在 $where'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
     }
   }
 
