@@ -4,13 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:kpasslib/kpasslib.dart';
 
+import '../core/idle_guard.dart';
 import '../core/vault_controller.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.vault});
+  const HomePage({super.key, required this.vault, required this.idleGuard});
 
   final VaultController vault;
+  final IdleGuard idleGuard;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -21,6 +23,8 @@ class _HomePageState extends State<HomePage> {
   String? _lastPath;
   bool _unlocked = false;
   bool _creating = false;
+  bool _autoLocked = false;
+  bool _locking = false;
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   final _search = TextEditingController();
@@ -32,12 +36,16 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     widget.vault.addListener(_onVault);
+    widget.idleGuard.onIdle = _onIdle;
     _boot();
   }
 
   @override
   void dispose() {
     widget.vault.removeListener(_onVault);
+    widget.idleGuard
+      ..disarm()
+      ..onIdle = null;
     _password.dispose();
     _confirm.dispose();
     _search.dispose();
@@ -46,6 +54,10 @@ class _HomePageState extends State<HomePage> {
 
   void _onVault() {
     if (mounted) setState(() {});
+  }
+
+  void _onIdle() {
+    unawaited(_lock(auto: true));
   }
 
   Future<void> _boot() async {
@@ -73,9 +85,13 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _busy = false;
       _unlocked = ok;
+      _autoLocked = false;
       _error = ok ? null : widget.vault.lastError;
     });
-    if (ok) _password.clear();
+    if (ok) {
+      _password.clear();
+      widget.idleGuard.arm();
+    }
   }
 
   Future<void> _create() async {
@@ -96,20 +112,38 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _busy = false;
       _unlocked = ok;
+      _autoLocked = false;
       _error = ok ? null : widget.vault.lastError;
     });
     if (ok) {
       _password.clear();
       _confirm.clear();
+      widget.idleGuard.arm();
     }
   }
 
-  void _lock() {
+  /// 锁定。先落盘再关库：正在编辑的内容不能因为「锁」而丢。
+  Future<void> _lock({bool auto = false}) async {
+    if (_locking || !_unlocked) return;
+    _locking = true;
+    widget.idleGuard.disarm();
+    await widget.vault.flushNow();
     widget.vault.close();
+    if (!mounted) {
+      _locking = false;
+      return;
+    }
+    // 编辑页可能还压在栈上：先回到首页，再显示锁定界面。
+    Navigator.of(context).popUntil((route) => route.isFirst);
     setState(() {
       _unlocked = false;
       _creating = false;
+      _autoLocked = auto;
+      _error = null;
+      _query = '';
+      _search.clear();
     });
+    _locking = false;
   }
 
   Future<void> _newNote() async {
@@ -177,6 +211,16 @@ class _HomePageState extends State<HomePage> {
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (_autoLocked) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '无操作 ${widget.idleGuard.limit.inMinutes} 分钟，已自动锁定',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                  ),
+                ],
                 const SizedBox(height: 28),
                 TextField(
                   controller: _password,
@@ -270,7 +314,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(
             tooltip: '锁定',
-            onPressed: _lock,
+            onPressed: () => _lock(),
             icon: const Icon(Icons.lock_outline, size: 20),
           ),
         ],
@@ -338,7 +382,6 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   late final TextEditingController _username;
   late final TextEditingController _password;
   late final TextEditingController _url;
-  Timer? _saveTimer;
   bool _showSecret = false;
   bool _reveal = false;
 
@@ -352,16 +395,18 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     _password = TextEditingController(text: widget.vault.fieldOf(e, 'Password'));
     _url = TextEditingController(text: widget.vault.fieldOf(e, 'URL'));
     _showSecret = _password.text.isNotEmpty;
-    _title.addListener(_scheduleSave);
-    _body.addListener(_scheduleSave);
-    _username.addListener(_scheduleSave);
-    _password.addListener(_scheduleSave);
-    _url.addListener(_scheduleSave);
+    _title.addListener(_onEdit);
+    _body.addListener(_onEdit);
+    _username.addListener(_onEdit);
+    _password.addListener(_onEdit);
+    _url.addListener(_onEdit);
   }
 
   @override
   void dispose() {
-    _saveTimer?.cancel();
+    // 改动先进内存，落盘防抖在 controller 里；这里负责让「返回列表」也把
+    // 挂起的那一次写落下去——否则快速输入后立刻返回会丢最后几个字。
+    unawaited(widget.vault.flushNow());
     _title.dispose();
     _body.dispose();
     _username.dispose();
@@ -370,19 +415,14 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     super.dispose();
   }
 
-  void _scheduleSave() {
-    _saveTimer?.cancel();
-    _saveTimer = Timer(const Duration(milliseconds: 800), _flush);
-  }
-
-  Future<void> _flush() async {
+  void _onEdit() {
     final e = widget.entry;
     widget.vault.updateField(e, 'Title', _title.text);
     widget.vault.updateField(e, 'Notes', _body.text);
     widget.vault.updateField(e, 'UserName', _username.text);
     widget.vault.updateField(e, 'Password', _password.text);
     widget.vault.updateField(e, 'URL', _url.text);
-    await widget.vault.save();
+    widget.vault.scheduleSave();
   }
 
   Future<void> _delete() async {
@@ -403,7 +443,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       ),
     );
     if (confirmed != true) return;
-    _saveTimer?.cancel();
+    await widget.vault.flushNow();
     widget.vault.deleteEntry(widget.entry);
     await widget.vault.save();
     if (mounted) Navigator.of(context).pop();

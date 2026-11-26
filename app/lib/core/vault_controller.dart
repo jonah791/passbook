@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -13,6 +14,10 @@ class VaultController extends ChangeNotifier {
   KdbxDatabase? _db;
   String? _filePath;
   String? _lastError;
+
+  Timer? _saveTimer;
+  bool _dirty = false;
+  Future<void>? _inflight;
 
   bool get isOpen => _db != null;
   String? get filePath => _filePath;
@@ -121,6 +126,40 @@ class VaultController extends ChangeNotifier {
     await temp.rename(path);
   }
 
+  /// 标记「内存里有改动，稍后落盘」：800ms 后自动写，连续输入只写一次。
+  ///
+  /// 与页面自建定时器的区别：**页面被销毁（快速返回）或自动锁定触发时，
+  /// 挂起的改动要有统一的地方去 flush**，否则最后几个字会被静默丢掉。
+  void scheduleSave() {
+    _dirty = true;
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 800), () {
+      unawaited(flushNow());
+    });
+  }
+
+  /// 立即落盘（有未保存改动才写）。并发调用会等同一份写入，不会写两遍。
+  Future<void> flushNow() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final pending = _inflight;
+    if (pending != null) await pending;
+    if (!_dirty) return;
+    _dirty = false;
+    final future = save();
+    _inflight = future;
+    try {
+      await future;
+    } catch (e) {
+      // 写失败不能静默：保留脏标记让下次重试，并把原因交给界面。
+      _dirty = true;
+      _lastError = '保存失败：$e';
+      notifyListeners();
+    } finally {
+      if (identical(_inflight, future)) _inflight = null;
+    }
+  }
+
   KdbxEntry addEntry({KdbxGroup? parent, String title = ''}) {
     final db = _db!;
     final group = parent ?? db.root;
@@ -163,6 +202,13 @@ class VaultController extends ChangeNotifier {
   }
 
   void close() {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    if (_dirty) {
+      // 调用方应当在关闭前 await flushNow()。喊出来，别静默丢。
+      debugPrint('VaultController.close(): 存在未落盘的改动，已丢弃');
+    }
+    _dirty = false;
     _db = null;
     _filePath = null;
     notifyListeners();
