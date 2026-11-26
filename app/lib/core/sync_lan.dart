@@ -4,9 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
-
-import 'vault_controller.dart';
+import 'merge_result.dart';
+import 'vault_bridge.dart';
 
 /// 局域网同步：一端开端点等，另一端拉库 → 本地合并 → 把合并结果推回去。
 ///
@@ -18,10 +17,13 @@ import 'vault_controller.dart';
 /// 为什么推回的是「合并结果」而不是「对端的原始库」：
 /// 推送之前本地可能又改了几笔，直接覆盖会把它们冲掉；让对方再 merge 一次
 /// 是幂等的，安全得多。
+///
+/// 这一层**不依赖 Flutter**（只用 `dart:io`）：同一份协议既跑在应用里，
+/// 也跑在命令行对端（`tool/lan_peer.dart`）里，跨进程联调才可能。
 class LanSync {
   LanSync(this.vault);
 
-  final VaultController vault;
+  final VaultBridge vault;
 
   /// 对端把合并结果推来时触发，界面据此刷新列表。
   void Function(MergeResult result)? onMerged;
@@ -55,10 +57,13 @@ class LanSync {
   }
 
   /// 开始等对端，返回本次配对码。端口由系统分配，避免撞车。
-  Future<String> start() async {
+  ///
+  /// [port] / [code] 只在测试与联调时显式给（要提前知道往哪连）；
+  /// 正常使用一律不给，端口 0 = 系统分配、配对码随机生成。
+  Future<String> start({int port = 0, String? code}) async {
     await stop();
-    _server = await HttpServer.bind(InternetAddress.anyIPv4, 0);
-    _code = _newCode();
+    _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+    _code = code ?? _newCode();
     unawaited(_accept(_server!));
     return _code;
   }
@@ -160,7 +165,7 @@ class LanSync {
         final why = await getRes.transform(utf8.decoder).join();
         throw LanSyncException('对方不让拉（${getRes.statusCode}）：$why');
       }
-      final remote = await consolidateHttpClientResponseBytes(getRes);
+      final remote = await _readAll(getRes);
       final result = await vault.mergeRemote(remote);
 
       final merged = await vault.exportBytes();
@@ -178,6 +183,21 @@ class LanSync {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// 把响应体读成字节。
+  ///
+  /// 不用 `flutter/foundation` 的 `consolidateHttpClientResponseBytes`：
+  /// 这一层要对「没有 Flutter 的环境」保持可用（命令行对端、跨进程联调）。
+  static Future<Uint8List> _readAll(HttpClientResponse res) async {
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in res) {
+      builder.add(chunk);
+      if (builder.length > _maxBody) {
+        throw const LanSyncException('对端发来的内容太大');
+      }
+    }
+    return builder.takeBytes();
   }
 }
 

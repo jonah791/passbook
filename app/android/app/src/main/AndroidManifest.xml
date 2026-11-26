@@ -2,10 +2,14 @@
     <!-- 局域网同步：本机开 HTTP 端点给对端拉库，也用客户端去连对端。
          注意这只是网络能力，应用本身不做任何外联（不查更新、不取图标、无遥测）。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- usesCleartextTraffic：局域网同步走明文 HTTP（对端是局域网内任意 IP，无法预先列域）。
+         明文传输的只是 KDBX 密文（库本身已加密），配对码一次性、拿不到码拿不到库。
+         Android 9+ 默认禁止明文，故显式打开。 -->
     <application
         android:label="passbook"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

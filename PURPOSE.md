@@ -61,9 +61,12 @@
    没 flush 就 close 必须真的丢，否则那条 flush 就是装饰）
 5. 生成的密码四类字符各至少一个、不含 0 O 1 l I（`app/test/password_gen_test.dart`）
 6. Windows 与 Android 两个平台都能完成上述各条
-   ⚠ 跨平台这件事要分开说：**Windows 端已实测**；Android 端工具链已装好
-   （SDK 36 / build-tools 36.0.0 / Java 17），能不能跑通以 `flutter build apk` 的
-   退出码为准——不是看日志尾巴。
+   - **Windows 端**：已实测（`passbook.exe --selftest` + 常规测试）
+   - **Android 端**（2026-11-26 实测，Android 14 / API 34 x86_64 模拟器）：
+     `flutter build apk --debug` **退出码 0**，产物 `build/app/outputs/flutter-apk/app-debug.apk`（177 MB）；
+     装上去能建库（提示「库已建在 /data/user/0/com.passbook.passbook/app_flutter/passbook.kdbx」）、
+     关掉重开**直接问主密码而不是重建**、记条目、开同步页（读得到本机 IPv4 与端口）
+   - 判据不是「日志里没报错」，是**退出码 + 产物存在 + 真跑一遍**：`| tail` 会把退出码换成 tail 的 0
 
 **同步（局域网）**
 7. 两端各改不同条目 → 同步后两端条目**完全一致**，谁的新东西都不丢
@@ -74,6 +77,23 @@
 9. 同一端重复同步幂等：合同一份两次，条目数不变（不长出副本）
 10. 配对码一次性：用过即换；错码必须被拒（`app/test/sync_lan_test.dart`）
 11. **线上只走 KDBX 密文**：传输层不需要也不应该再见明文
+12. 冲突的准确语义（都进了测试，别读成更强的承诺）：
+   - 不同条目各改各的 ⇒ 都保留
+   - 同一条两边都改 ⇒ **整体择一**（按修改时间，晚的赢；输的那版进历史可翻回），
+     不是逐字段合并
+   - 删除 vs 并发编辑 ⇒ **墓碑优先**，对端改了也不复活
+13. 新设备第一次同步：本机是空库 ⇒ **整库接管**对端（根分组 UUID 不同也能接）；
+   本机已有内容 ⇒ **拒绝覆盖并说明**——两条都在 `sync_merge_test.dart` 里
+
+**跨端实测（2026-11-26，Windows ↔ Android 14 模拟器，同一局域网 192.168.50.0/24）**
+- 安卓建空库 → 在同步页填 Windows 端 `192.168.50.204:8124` + 配对码 → **整库接管**，
+  安卓列表 1 条「来自Windows端」；Windows 侧日志 `MERGED added=0 removed=0 after=1`
+- 两端各自再加一条（安卓 `AndroidAdded`，Windows `Windows端新增`）→ 安卓再连（`:8125`）→
+  **两端各 3 条，谁都没丢**；Windows 侧 `MERGED added=1 removed=0 after=3` 且打出了 `ENTRY AndroidAdded`
+- 反向（Windows 主动拉安卓，经 adb 端口转发 46587）：`PULLED added=0 removed=0 after=3`，
+  安卓页面显示「对端：两边已经一致（3 条）」，配对码已换成新的（一次性生效）
+- 工具：`app/tool/lan_peer.dart`（无界面的命令行对端，跑同一份 `sync_lan.dart`）、
+  `app/lib/lan_probe_main.dart`（装机探针，`--target` 打专用 APK）
 
 **体验**
 - 首次使用只设一个主密码，不让人选文件。库**优先放文档目录**；文档目录写不进去时
@@ -92,9 +112,29 @@
 
 ## 平台顺序
 
-Windows（先跑通）→ Android → Linux / macOS（架构上留好，不急）
+Windows（已跑通）→ **Android（2026-11-26 跑通：APK 构建 + 装机运行 + 与 Windows 双向同步）**
+→ Linux / macOS（架构上留好，不急）
+
+## 构建 Android 的四个坑（2026-11-26 实录，照着踩会省几小时）
+
+1. **Gradle 下载被限速**：这台机器直连国际 Maven 时单个 jar 只有 ~6 KB/s（同一 URL 用 curl 是 3 MB/s）。
+   给 Gradle 的 JVM 配本机代理即可（`%USERPROFILE%\.gradle\gradle.properties`）：
+   `systemProp.https.proxyHost=127.0.0.1` / `systemProp.https.proxyPort=<本机代理端口>`
+2. **镜像别塞进 project 级仓库**：Flutter 的 included build（`packages/flutter_tools/gradle`）
+   声明了 `FAIL_ON_PROJECT_REPOS`，往 project 级加仓库会让它直接报
+   「Build was configured to prefer settings repositories…」。镜像要写进
+   `android/settings.gradle.kts` 的 `pluginManagement.repositories` 与工程 `allprojects`（本仓已写）。
+3. **`ndkVersion = flutter.ndkVersion` 不能删**：`path_provider_android` 现在依赖 `package:jni`，
+   它硬性要求 NDK 28.2.13676358；删掉会报「plugin(s) depend on a different Android NDK version」。
+4. **pub 缓存的目录要可写**：`jni` 会用自己的 CMake 在 pub 缓存里建 `.cxx` 构建目录。
+   缓存默认在 `%LOCALAPPDATA%\Pub\Cache`，写不进去就报一堆
+   「CMake Error: Cannot open file for write … .cxx/…/CMakeCache.txt」——
+   把 `PUB_CACHE` 指到一个可写目录再 `flutter pub get` 即可。
+   （同理：`app/build` 若整个被挪走/换成只读，CMake 那一步也会这样报。）
 
 ## 目录
 
 - `app/` — Flutter 应用（`lib/core/` 逻辑、`lib/pages/` 界面、`test/` 判据）
+  - `app/tool/lan_peer.dart` — 命令行对端（无界面跑同一份同步协议，跨进程/跨设备联调用）
+  - `app/lib/lan_probe_main.dart` — 装机探针（`flutter build apk --target=…`，把结果打进 logcat）
 - `docs/` — 设计决定与判据

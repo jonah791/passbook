@@ -6,9 +6,15 @@ import 'package:kpasslib/kpasslib.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'merge_result.dart';
+import 'vault_bridge.dart';
+
+export 'merge_result.dart';
+export 'vault_bridge.dart';
+
 /// 封装 KDBX 库的打开/新建/保存与条目操作。
 /// 只做本地文件读写，没有任何网络行为。
-class VaultController extends ChangeNotifier {
+class VaultController extends ChangeNotifier implements VaultBridge {
   static const _prefsKey = 'last_vault_path';
 
   KdbxDatabase? _db;
@@ -318,6 +324,7 @@ class VaultController extends ChangeNotifier {
 
   /// 导出当前库的密文，用于同步。
   /// **线上永远只走这个**——链路是局域网的，但内容始终是 KDBX 密文。
+  @override
   Future<Uint8List> exportBytes() async {
     final db = _db;
     if (db == null) throw StateError('库没打开');
@@ -329,6 +336,7 @@ class VaultController extends ChangeNotifier {
   /// 用库自带的 `KdbxDatabase.merge`：它是 2P-set + 墓碑的正确实现，
   /// 覆盖「对端新增 / 本地新增 / 两边都改（按修改时间）」以及删除，
   /// 自己手写一份 CRDT 只会把删除传播写错。
+  @override
   Future<MergeResult> mergeRemote(Uint8List remoteBytes) async {
     final db = _db;
     final password = _sessionPassword;
@@ -339,6 +347,32 @@ class VaultController extends ChangeNotifier {
         password: ProtectedData.fromString(password),
       ),
     );
+
+    // 对端根本是**另一个库**（根分组 uuid 不同）时只有一条路是对的：
+    // 本地还一条都没记 ⇒ 把对端整库接下来（新设备第一次同步就是这样）；
+    // 本地有内容 ⇒ 拒绝，并且说清楚——绝不能悄悄拿对端把本地顶掉。
+    if (remote.root.uuid != db.root.uuid) {
+      final localCount = db.root.allEntries.length;
+      if (localCount == 0) {
+        _db = remote;
+        _dirty = true;
+        await flushNow();
+        notifyListeners();
+        return MergeResult(
+          before: 0,
+          after: remote.root.allEntries.length,
+          added: remote.root.allEntries.length,
+          removed: 0,
+          adopted: true,
+        );
+      }
+      throw StateError(
+        '两边的库不是同一个（根分组 UUID 不同）：本地 $localCount 条，'
+        '对端 ${remote.root.allEntries.length} 条。'
+        '本机这条库已经有内容，不能用对端的库顶掉——'
+        '先在空库的那台设备上连过来接管，之后再改就没关系了。',
+      );
+    }
 
     final before = _idsOf(db);
     db.merge(remote);
@@ -361,29 +395,4 @@ class VaultController extends ChangeNotifier {
   static Set<KdbxUuid> _idsOf(KdbxDatabase db) => {
     for (final e in db.root.allEntries) e.uuid,
   };
-}
-
-/// 一次合并的结果，供界面告示「这次同步到底动了几条」。
-class MergeResult {
-  const MergeResult({
-    required this.before,
-    required this.after,
-    required this.added,
-    required this.removed,
-  });
-
-  final int before;
-  final int after;
-  final int added;
-  final int removed;
-
-  bool get changed => added > 0 || removed > 0;
-
-  String get summary {
-    if (!changed) return '两边已经一致（$after 条）';
-    final parts = <String>[];
-    if (added > 0) parts.add('新增 $added');
-    if (removed > 0) parts.add('移除 $removed');
-    return '${parts.join(' · ')}，现在 $after 条';
-  }
 }

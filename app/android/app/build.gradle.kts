@@ -8,6 +8,8 @@ plugins {
 android {
     namespace = "com.passbook.passbook"
     compileSdk = flutter.compileSdkVersion
+    // 必须跟 Flutter 默认一致（28.2.13676358）：path_provider_android 现在走
+    // package:jni，它硬性要求这个 NDK 版本，低了 AGP 会直接拒绝构建。
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
