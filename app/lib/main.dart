@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'core/idle_guard.dart';
 import 'core/vault_controller.dart';
 import 'pages/home_page.dart';
+import 'theme/app_theme.dart';
 
 /// 全局唯一的库控制器（这个应用只开一个库）。
 final vault = VaultController();
@@ -56,10 +57,9 @@ class _PassbookAppState extends State<PassbookApp> {
     return MaterialApp(
       title: 'Passbook',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7D6F)),
-        useMaterial3: true,
-      ),
+      theme: buildAppTheme(Brightness.light),
+      darkTheme: buildAppTheme(Brightness.dark),
+      themeMode: ThemeMode.system,
       // 挂在 Navigator 外层：所有页面的指针事件都会冒泡到这里。
       builder: (context, child) => Listener(
         onPointerDown: (_) => idleGuard.bump(),

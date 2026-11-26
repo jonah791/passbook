@@ -7,6 +7,7 @@ import 'package:kpasslib/kpasslib.dart';
 import '../core/idle_guard.dart';
 import '../core/password_gen.dart';
 import '../core/vault_controller.dart';
+import '../theme/app_theme.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
 class HomePage extends StatefulWidget {
@@ -98,13 +99,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// 解锁后把光标放进搜索框：打开就能打字找东西，少一次点击。
-  void _focusSearchSoon() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _searchFocus.requestFocus();
-    });
-  }
-
   Future<void> _create() async {
     if (_password.text.isEmpty) {
       setState(() => _error = '主密码不能为空');
@@ -132,6 +126,13 @@ class _HomePageState extends State<HomePage> {
       widget.idleGuard.arm();
       _focusSearchSoon();
     }
+  }
+
+  /// 解锁后把光标放进搜索框：打开就能打字找东西，少一次点击。
+  void _focusSearchSoon() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocus.requestFocus();
+    });
   }
 
   /// 锁定。先落盘再关库：正在编辑的内容不能因为「锁」而丢。
@@ -187,7 +188,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('已复制$label（30 秒后自动清空）')));
+    ).showSnackBar(SnackBar(content: Text('已复制$label · 30 秒后自动清空')));
     Timer(const Duration(seconds: 30), () async {
       final current = await Clipboard.getData(Clipboard.kTextPlain);
       if (current?.text == text) {
@@ -198,104 +199,145 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_checking) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-    if (!_unlocked) {
-      return _lockedScaffold();
-    }
-    return _listScaffold();
+    // 读偏好是毫秒级的事，别闪一个进度圈打断「打开就开始用」。
+    if (_checking) return const Scaffold(body: SizedBox.expand());
+    return _unlocked ? _listScaffold() : _lockedScaffold();
   }
+
+  // ───────────────────────── 解锁 / 创建 ─────────────────────────
 
   Widget _lockedScaffold() {
     final hasVault = _lastPath != null && !_creating;
+    final theme = Theme.of(context);
+    final soft = theme.colorScheme.onSurfaceVariant;
+    final faint = theme.textTheme.labelSmall?.color;
+
     return Scaffold(
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 380),
-          child: Padding(
-            padding: const EdgeInsets.all(28),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 64),
+          child: SizedBox(
+            width: 300,
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.lock_outline, size: 56),
-                const SizedBox(height: 12),
+                // 书脊上的烫印：这是整个应用唯一允许出现强调色的地方。
                 Text(
-                  hasVault ? '解锁密码本' : '创建密码本',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineSmall,
+                  'passbook',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 3.4,
+                    fontWeight: FontWeight.w500,
+                    color: theme.colorScheme.primary,
+                  ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 44),
                 Text(
-                  hasVault ? '输入主密码继续' : '设一个主密码，之后每次打开都用它',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodySmall,
+                  hasVault ? '输入主密码' : '设一个主密码',
+                  style: theme.textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  hasVault ? '这把钥匙只存在你这里' : '之后每次打开都用它。忘了就打不开了',
+                  style: TextStyle(fontSize: 13, height: 1.5, color: soft),
                 ),
                 if (_autoLocked) ...[
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 4),
                   Text(
                     '无操作 ${widget.idleGuard.limit.inMinutes} 分钟，已自动锁定',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
+                    style: TextStyle(fontSize: 12, height: 1.5, color: faint),
                   ),
                 ],
-                const SizedBox(height: 28),
+                const SizedBox(height: 32),
                 TextField(
                   controller: _password,
                   obscureText: true,
                   autofocus: true,
+                  enabled: !_busy,
+                  style: const TextStyle(fontSize: 15, letterSpacing: 1.2),
                   onSubmitted: (_) => hasVault ? _unlock() : _create(),
                   decoration: const InputDecoration(
-                    labelText: '主密码',
-                    border: OutlineInputBorder(),
+                    hintText: '主密码',
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(
+                      vertical: 12,
+                      horizontal: 2,
+                    ),
                   ),
                 ),
                 if (!hasVault) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 18),
                   TextField(
                     controller: _confirm,
                     obscureText: true,
+                    enabled: !_busy,
+                    style: const TextStyle(fontSize: 15, letterSpacing: 1.2),
+                    onSubmitted: (_) => _create(),
                     decoration: const InputDecoration(
-                      labelText: '再输一次',
-                      border: OutlineInputBorder(),
+                      hintText: '再输一次',
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(
+                        vertical: 12,
+                        horizontal: 2,
+                      ),
                     ),
                   ),
                 ],
                 if (_error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
+                  const SizedBox(height: 14),
+                  Text(
+                    _error!,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
                 ],
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: _busy ? null : (hasVault ? _unlock : _create),
-                  child: Text(hasVault ? '解锁' : '创建'),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    if (!hasVault && _lastPath != null)
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() {
+                                _creating = false;
+                                _error = null;
+                              }),
+                        style: TextButton.styleFrom(
+                          foregroundColor: faint,
+                          padding: EdgeInsets.zero,
+                        ),
+                        child: const Text(
+                          '返回解锁',
+                          style: TextStyle(fontSize: 12.5),
+                        ),
+                      )
+                    else if (hasVault)
+                      TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => setState(() {
+                                _creating = true;
+                                _error = null;
+                              }),
+                        style: TextButton.styleFrom(
+                          foregroundColor: faint,
+                          padding: EdgeInsets.zero,
+                        ),
+                        child: const Text(
+                          '用别的库',
+                          style: TextStyle(fontSize: 12.5),
+                        ),
+                      ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: _busy ? null : (hasVault ? _unlock : _create),
+                      child: Text(hasVault ? '进入 →' : '创建 →'),
+                    ),
+                  ],
                 ),
-                if (hasVault) ...[
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () => setState(() {
-                            _creating = true;
-                            _error = null;
-                          }),
-                    child: const Text('用别的库？'),
-                  ),
-                ],
-                if (!hasVault && _lastPath != null) ...[
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () => setState(() => _creating = false),
-                    child: const Text('返回解锁'),
-                  ),
-                ],
-                if (_busy) ...[
-                  const SizedBox(height: 16),
-                  const Center(child: CircularProgressIndicator()),
-                ],
               ],
             ),
           ),
@@ -303,6 +345,8 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
+
+  // ───────────────────────── 列表 ─────────────────────────
 
   Widget _listScaffold() {
     final entries = widget.vault.allEntries.where((entry) {
@@ -325,70 +369,203 @@ class _HomePageState extends State<HomePage> {
       child: Focus(
         autofocus: true,
         child: Scaffold(
-          appBar: AppBar(
-            titleSpacing: 16,
-            title: TextField(
-              controller: _search,
-              focusNode: _searchFocus,
-              onChanged: (value) => setState(() => _query = value),
-              decoration: const InputDecoration(
-                hintText: '搜索',
-                border: InputBorder.none,
-                prefixIcon: Icon(Icons.search, size: 20),
-                isDense: true,
+          body: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                // 一栏到底：页眉、搜索、列表全部同轴。多一套左边缘，
+                // 眼睛就要多校准一次——这是最常见的「生成感」来源。
+                constraints: const BoxConstraints(maxWidth: Palette.listWidth),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Column(
+                    children: [
+                      _listHeader(entries.length),
+                      _searchRow(),
+                      const Divider(height: 0.5),
+                      Expanded(
+                        child: entries.isEmpty
+                            ? _emptyState()
+                            : ListView.separated(
+                                padding: const EdgeInsets.only(
+                                  top: 4,
+                                  bottom: 96,
+                                ),
+                                itemCount: entries.length,
+                                separatorBuilder: (_, _) => const Divider(
+                                  height: 0.5,
+                                  indent: 24,
+                                  endIndent: 24,
+                                ),
+                                itemBuilder: (context, index) =>
+                                    _noteRow(entries[index]),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
-            actions: [
-              IconButton(
-                tooltip: '锁定',
-                onPressed: () => _lock(),
-                icon: const Icon(Icons.lock_outline, size: 20),
-              ),
-            ],
-          ),
-          body: entries.isEmpty
-              ? const Center(child: Text('还没有条目，点右下角 + 记一条'))
-              : ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 96),
-                  itemCount: entries.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final entry = entries[index];
-                    final title = widget.vault.fieldOf(entry, 'Title');
-                    final preview = widget.vault.previewOf(entry);
-                    final hasPassword = widget.vault.hasPassword(entry);
-                    return ListTile(
-                      title: Text(
-                        title.isEmpty ? '无标题' : title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: preview.isEmpty
-                          ? null
-                          : Text(
-                              preview,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                      trailing: hasPassword
-                          ? IconButton(
-                              tooltip: '复制密码',
-                              icon: const Icon(Icons.key_outlined, size: 20),
-                              onPressed: () => _copy(
-                                widget.vault.fieldOf(entry, 'Password'),
-                                '密码',
-                              ),
-                            )
-                          : null,
-                      onTap: () => _openEditor(entry),
-                    );
-                  },
-                ),
-          floatingActionButton: FloatingActionButton(
-            onPressed: _newNote,
-            child: const Icon(Icons.add),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _listHeader(int count) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 14, 8),
+      child: Row(
+        children: [
+          Text(
+            'passbook',
+            style: TextStyle(
+              fontSize: 11,
+              letterSpacing: 3.4,
+              fontWeight: FontWeight.w500,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Text('$count 条', style: theme.textTheme.labelSmall),
+          const Spacer(),
+          _quietIcon(
+            icon: Icons.add,
+            tooltip: '新建（Ctrl+N）',
+            onPressed: () => unawaited(_newNote()),
+          ),
+          const SizedBox(width: 4),
+          _quietIcon(
+            icon: Icons.lock_outline,
+            tooltip: '锁定（Ctrl+L）',
+            onPressed: () => unawaited(_lock()),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 图标是工具不是装饰：默认淡、悬停才实。密集的深色图标会把纸弄脏。
+  Widget _quietIcon({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    final theme = Theme.of(context);
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      color: theme.colorScheme.onSurfaceVariant,
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.all(8),
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+    );
+  }
+
+  Widget _searchRow() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
+      child: TextField(
+        controller: _search,
+        focusNode: _searchFocus,
+        onChanged: (value) => setState(() => _query = value),
+        style: const TextStyle(fontSize: 14),
+        cursorHeight: 15,
+        decoration: const InputDecoration(
+          hintText: '搜索',
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(vertical: 6),
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+        ),
+      ),
+    );
+  }
+
+  Widget _noteRow(KdbxEntry entry) {
+    final theme = Theme.of(context);
+    final title = widget.vault.fieldOf(entry, 'Title');
+    final preview = widget.vault.previewOf(entry);
+    final hasPassword = widget.vault.hasPassword(entry);
+
+    return InkWell(
+      onTap: () => _openEditor(entry),
+      // 悬停给一点点底色：回应人的动作，但别用 splash（纸上会显得脏）。
+      hoverColor: theme.colorScheme.onSurface.withValues(alpha: 0.025),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 14, 12, 14),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title.isEmpty ? '无标题' : title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w500,
+                      height: 1.35,
+                      color: title.isEmpty
+                          ? theme.colorScheme.onSurfaceVariant
+                          : theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  if (preview.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      preview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.4,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (hasPassword)
+              _quietIcon(
+                icon: Icons.key_outlined,
+                tooltip: '复制密码',
+                onPressed: () => unawaited(
+                  _copy(widget.vault.fieldOf(entry, 'Password'), '密码'),
+                ),
+              )
+            else
+              const SizedBox(width: 34),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '还什么都没记',
+            style: TextStyle(
+              fontSize: 13.5,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 4),
+          TextButton(
+            onPressed: () => unawaited(_newNote()),
+            child: const Text('记第一条'),
+          ),
+        ],
       ),
     );
   }
@@ -413,6 +590,15 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   late final TextEditingController _url;
   bool _showSecret = false;
   bool _reveal = false;
+
+  /// 字段自己不带边框：这里的排版靠留白与字号，不靠框。
+  static const _bare = InputDecoration(
+    border: InputBorder.none,
+    enabledBorder: InputBorder.none,
+    focusedBorder: InputBorder.none,
+    contentPadding: EdgeInsets.zero,
+    isDense: true,
+  );
 
   @override
   void initState() {
@@ -476,14 +662,23 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除这条？'),
+        content: const Text('删掉就找不回来了。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
+            child: Text(
+              '取消',
+              style: TextStyle(
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
+            ),
           ),
-          FilledButton(
+          TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
+            child: Text(
+              '删除',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
           ),
         ],
       ),
@@ -497,6 +692,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -505,83 +701,198 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       child: Focus(
         autofocus: true,
         child: Scaffold(
-          appBar: AppBar(
-            actions: [
-              IconButton(
-                tooltip: '删除',
-                onPressed: _delete,
-                icon: const Icon(Icons.delete_outline, size: 20),
-              ),
-            ],
-          ),
-          body: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-            children: [
-              TextField(
-                controller: _title,
-                autofocus: _title.text.isEmpty,
-                style: Theme.of(context).textTheme.headlineSmall,
-                decoration: const InputDecoration(
-                  hintText: '标题',
-                  border: InputBorder.none,
+          body: SafeArea(
+            child: Center(
+              child: ConstrainedBox(
+                // 行宽上限：超过这个宽度眼睛跳行，是桌面排版最常见的缺陷。
+                // 顶栏也锁进同一条轴，否则返回键会孤零零地飘在窗口最左。
+                constraints: const BoxConstraints(
+                  maxWidth: Palette.readingWidth,
                 ),
-              ),
-              TextField(
-                controller: _body,
-                maxLines: null,
-                minLines: 8,
-                keyboardType: TextInputType.multiline,
-                decoration: const InputDecoration(
-                  hintText: '记点什么…',
-                  border: InputBorder.none,
-                ),
-              ),
-              const Divider(),
-              if (!_showSecret)
-                TextButton.icon(
-                  onPressed: () => setState(() => _showSecret = true),
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('添加账号密码'),
-                )
-              else ...[
-                TextField(
-                  controller: _username,
-                  decoration: const InputDecoration(labelText: '用户名 / 账号'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _password,
-                  obscureText: !_reveal,
-                  decoration: InputDecoration(
-                    labelText: '密码',
-                    suffixIcon: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: '生成密码',
-                          icon: const Icon(Icons.casino_outlined, size: 20),
-                          onPressed: _generate,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Column(
+                    children: [
+                      _editorBar(theme),
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(32, 12, 32, 96),
+                          children: [
+                            TextField(
+                              controller: _title,
+                              autofocus: _title.text.isEmpty,
+                              style: const TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: -0.3,
+                                height: 1.25,
+                              ),
+                              cursorHeight: 26,
+                              decoration: _bare.copyWith(hintText: '标题'),
+                            ),
+                            const SizedBox(height: 14),
+                            TextField(
+                              controller: _body,
+                              maxLines: null,
+                              minLines: 3,
+                              keyboardType: TextInputType.multiline,
+                              style: const TextStyle(
+                                fontSize: 15.5,
+                                height: 1.85,
+                              ),
+                              cursorHeight: 17,
+                              decoration: _bare.copyWith(hintText: '记点什么'),
+                            ),
+                            const SizedBox(height: 36),
+                            if (!_showSecret)
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: () =>
+                                      setState(() => _showSecret = true),
+                                  icon: const Icon(Icons.add, size: 15),
+                                  label: const Text('账号密码'),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor:
+                                        theme.colorScheme.onSurfaceVariant,
+                                    padding: EdgeInsets.zero,
+                                    textStyle: const TextStyle(fontSize: 13.5),
+                                  ),
+                                ),
+                              )
+                            else ...[
+                              // 小标题接一根线：不是装饰，是在说「从这里开始是
+                              // 另一类信息」。三行裸字段没有归属，读者要自己猜。
+                              Row(
+                                children: [
+                                  Text(
+                                    '登录信息',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      letterSpacing: 0.8,
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Divider(
+                                      height: 0.5,
+                                      color: theme.colorScheme.outline,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 18),
+                              _secretField(
+                                controller: _username,
+                                hint: '用户名 / 邮箱',
+                              ),
+                              const SizedBox(height: 18),
+                              TextField(
+                                controller: _password,
+                                obscureText: !_reveal,
+                                style: const TextStyle(
+                                  fontSize: 14.5,
+                                  height: 1.4,
+                                  letterSpacing: 0.6,
+                                  fontFamily: 'Consolas',
+                                ),
+                                decoration: _bare.copyWith(
+                                  hintText: '密码',
+                                  suffixIcon: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        tooltip: '生成 20 位密码',
+                                        icon: const Icon(
+                                          Icons.casino_outlined,
+                                          size: 16,
+                                        ),
+                                        color:
+                                            theme.colorScheme.onSurfaceVariant,
+                                        onPressed: _generate,
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                      IconButton(
+                                        tooltip: _reveal ? '隐藏' : '显示',
+                                        icon: Icon(
+                                          _reveal
+                                              ? Icons.visibility_off_outlined
+                                              : Icons.visibility_outlined,
+                                          size: 16,
+                                        ),
+                                        color:
+                                            theme.colorScheme.onSurfaceVariant,
+                                        onPressed: () =>
+                                            setState(() => _reveal = !_reveal),
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 18),
+                              _secretField(controller: _url, hint: '网址'),
+                            ],
+                          ],
                         ),
-                        IconButton(
-                          icon: Icon(
-                            _reveal ? Icons.visibility_off : Icons.visibility,
-                            size: 20,
-                          ),
-                          onPressed: () => setState(() => _reveal = !_reveal),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _url,
-                  decoration: const InputDecoration(labelText: '网址'),
-                ),
-              ],
-            ],
+              ),
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _secretField({
+    required TextEditingController controller,
+    required String hint,
+  }) {
+    return TextField(
+      controller: controller,
+      style: const TextStyle(fontSize: 14.5, height: 1.4),
+      decoration: _bare.copyWith(hintText: hint),
+    );
+  }
+
+  Widget _editorBar(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: '返回（Esc）',
+            icon: const Icon(Icons.arrow_back_ios_new, size: 15),
+            color: theme.colorScheme.onSurfaceVariant,
+            visualDensity: VisualDensity.compact,
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
+          const Spacer(),
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            icon: Icon(
+              Icons.more_horiz,
+              size: 18,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            onSelected: (value) {
+              if (value == 'delete') unawaited(_delete());
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'delete',
+                child: Text(
+                  '删除这条',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
