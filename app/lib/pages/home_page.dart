@@ -10,6 +10,7 @@ import '../core/update/update_controller.dart';
 import '../core/vault_controller.dart';
 import '../theme/app_theme.dart';
 import 'about_page.dart';
+import 'backup_page.dart';
 import 'sync_page.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
@@ -215,6 +216,14 @@ class _HomePageState extends State<HomePage> {
       context,
     ).push(MaterialPageRoute(builder: (_) => SyncPage(vault: widget.vault)));
     // 同步会合并出对端的条目，回来得重读列表。
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openBackup() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => BackupPage(vault: widget.vault)),
+    );
+    // 恢复会整个换掉库里的内容，回来必须重读。
     if (mounted) setState(() {});
   }
 
@@ -478,6 +487,12 @@ class _HomePageState extends State<HomePage> {
             icon: Icons.sync_alt,
             tooltip: '局域网同步',
             onPressed: () => unawaited(_openSync()),
+          ),
+          const SizedBox(width: 4),
+          _quietIcon(
+            icon: Icons.archive_outlined,
+            tooltip: '备份与恢复',
+            onPressed: () => unawaited(_openBackup()),
           ),
           const SizedBox(width: 4),
           _quietIcon(

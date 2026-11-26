@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- passbook 自适应图标（Android 8+）。背景是纸白纯色，前景是赤陶印章。
+     内容落在中央 72/108dp 安全区内，圆形/方圆/圆角方遮罩下都不会被裁到印章。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

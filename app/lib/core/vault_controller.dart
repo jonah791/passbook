@@ -331,6 +331,30 @@ class VaultController extends ChangeNotifier implements VaultBridge {
     return Uint8List.fromList(await db.save());
   }
 
+  /// 用外部 KDBX 字节**整体替换**当前库（从备份恢复用）。
+  ///
+  /// 与 [mergeRemote] 的差别在语义不在实现：合并只增不减，替换是真的回到那一刻，
+  /// 备份之后新增的条目会消失。所以「要不要替换」是用户的选择，这里只负责执行。
+  ///
+  /// **先验后换**：解不开（密码不对 / 不是 KDBX）就在这里抛异常，当前库保持原样，
+  /// 不允许出现「换了一半」的中间态。
+  Future<void> replaceWith(Uint8List bytes) async {
+    final password = _sessionPassword;
+    if (password == null) throw StateError('库没打开');
+
+    final incoming = await KdbxDatabase.fromBytes(
+      data: bytes,
+      credentials: KdbxCredentials(
+        password: ProtectedData.fromString(password),
+      ),
+    );
+
+    _db = incoming;
+    _dirty = true;
+    await flushNow();
+    notifyListeners();
+  }
+
   /// 与对端库合并（对端传过来的是密文，这里用本次会话的主密码解开）。
   ///
   /// 用库自带的 `KdbxDatabase.merge`：它是 2P-set + 墓碑的正确实现，
