@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/sync_lan.dart';
 import '../core/vault_controller.dart';
@@ -107,6 +110,36 @@ class _SyncPageState extends State<SyncPage> {
     );
   }
 
+  /// 二维码里装什么。
+  ///
+  /// 多网卡时只用第一个：`LanSync.localIPv4` 已经把虚拟网卡剔掉了，排第一的
+  /// 是真实网卡。其余地址仍列在下面，扫码不通时人可以手填另一个。
+  SyncOffer? get _offer {
+    final code = _myCode;
+    final port = _myPort;
+    if (code == null || port == null || _ips.isEmpty) return null;
+    return SyncOffer(host: _ips.first, port: port, code: code);
+  }
+
+  /// 只有带摄像头的端能扫。桌面端没有摄像头扫码能力（插件也不支持 Windows），
+  /// 那边就只显示码、不出现这个按钮——出现一个点了必然失败的按钮更糟。
+  bool get _canScan => Platform.isAndroid;
+
+  Future<void> _scan() async {
+    final offer = await Navigator.of(
+      context,
+    ).push<SyncOffer>(MaterialPageRoute(builder: (_) => const _ScanPage()));
+    if (!mounted || offer == null) return;
+    setState(() {
+      _host.text = offer.host;
+      _port.text = '${offer.port}';
+      _code.text = offer.code;
+      _error = null;
+    });
+    // 扫完直接连：扫码的目的就是省掉「再点一次」。连接失败会照常显示原因。
+    await _connect();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -152,7 +185,9 @@ class _SyncPageState extends State<SyncPage> {
                         ),
                         const SizedBox(height: 28),
                         _section(theme, '这台设备'),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 14),
+                        _qrBlock(theme),
+                        const SizedBox(height: 14),
                         if (_ips.isEmpty)
                           Text(
                             '没找到局域网地址——先确认连上了 WiFi。',
@@ -202,6 +237,26 @@ class _SyncPageState extends State<SyncPage> {
                         const SizedBox(height: 34),
                         _section(theme, '连另一台'),
                         const SizedBox(height: 14),
+                        // 扫码的路只在有摄像头的端出现。桌面端没有这条能力
+                        // （插件也不支持 Windows），那边只显示码、让人用手填。
+                        if (_canScan) ...[
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => unawaited(_scan()),
+                              icon: const Icon(Icons.qr_code_scanner, size: 16),
+                              label: const Text('扫对方的二维码'),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '扫一次，就不用抄下面这三样。',
+                            style: TextStyle(fontSize: 12, color: soft),
+                          ),
+                          const SizedBox(height: 20),
+                        ],
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -296,6 +351,46 @@ class _SyncPageState extends State<SyncPage> {
     );
   }
 
+  /// 二维码。黑白、白底——这不是审美选择，是能不能扫出来的问题：
+  /// 纸色底配淡墨点，摄像头读不出那个对比度。全站唯一一处纯白是有理由的。
+  Widget _qrBlock(ThemeData theme) {
+    final offer = _offer;
+    if (offer == null) {
+      return Text(
+        '配对码准备中…',
+        style: TextStyle(
+          fontSize: 13,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+    }
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(Palette.radius),
+          border: Border.all(color: theme.colorScheme.outline, width: 0.5),
+        ),
+        child: QrImageView(
+          data: offer.toUri(),
+          version: QrVersions.auto,
+          size: 190,
+          gapless: true,
+          backgroundColor: Colors.white,
+          eyeStyle: const QrEyeStyle(
+            eyeShape: QrEyeShape.square,
+            color: Colors.black,
+          ),
+          dataModuleStyle: const QrDataModuleStyle(
+            dataModuleShape: QrDataModuleShape.square,
+            color: Colors.black,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _section(ThemeData theme, String title) {
     return Row(
       children: [
@@ -310,6 +405,90 @@ class _SyncPageState extends State<SyncPage> {
         const SizedBox(width: 10),
         Expanded(child: Divider(height: 0.5, color: theme.colorScheme.outline)),
       ],
+    );
+  }
+}
+
+/// 扫码页。只认本应用的码：别的二维码扫进来会被 [SyncOffer.tryParse] 挡掉，
+/// 页面继续取景，不弹错——举着的可能是别人的名片码，没必要为此打断。
+class _ScanPage extends StatefulWidget {
+  const _ScanPage();
+
+  @override
+  State<_ScanPage> createState() => _ScanPageState();
+}
+
+class _ScanPageState extends State<_ScanPage> {
+  final _controller = MobileScannerController(
+    // 同一个码在画面里停两秒会连回调好几次，去重交给插件。
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
+  );
+
+  /// 认到之后立刻置位：pop 要一帧才生效，这期间可能还有回调进来。
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    unawaited(_controller.dispose());
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    for (final barcode in capture.barcodes) {
+      final raw = barcode.rawValue;
+      if (raw == null) continue;
+      final offer = SyncOffer.tryParse(raw);
+      if (offer == null) continue;
+      _handled = true;
+      Navigator.of(context).pop(offer);
+      return;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: const Text('扫对方的二维码'),
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          MobileScanner(controller: _controller, onDetect: _onDetect),
+          // 取景框只是个提示，不加遮罩：遮住画面反而让人对不准。
+          IgnorePointer(
+            child: Center(
+              child: Container(
+                width: 230,
+                height: 230,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white70, width: 1.5),
+                  borderRadius: BorderRadius.circular(Palette.radius),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 24,
+            right: 24,
+            bottom: 44,
+            child: Text(
+              '把对方屏幕上的二维码放进框里，扫到就会自动连。',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.6,
+                color: Colors.white.withValues(alpha: 0.85),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

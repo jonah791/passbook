@@ -185,7 +185,13 @@ class LanSync {
     required int port,
     required String code,
   }) async {
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      // 显式声明直连，不交给任何代理。局域网同步打的是 192.168 这类内网
+      // 地址，而代理对内网目标的回答通常是 502/503——那既不是对端说的话，
+      // 也会让人以为是密码本坏了。默认值本来就是直连，这里写死是为了
+      // 不被宿主环境（安卓的 ProxySelector、桌面上的系统代理插件）改掉。
+      ..findProxy = ((_) => 'DIRECT');
     final uri = Uri.parse(
       'http://$host:$port/vault?code=${Uri.encodeQueryComponent(code)}',
     );
@@ -262,4 +268,74 @@ String explainSyncFailure(int status, String body) {
     403 => '：配对码不对，用对端屏幕上此刻显示的那个。',
     _ => '：对方没有说明原因。',
   };
+}
+
+/// 一次配对邀请：对端拿到这三样就能连。
+///
+/// 二维码里装的就是它。加这层的理由很实在：手抄三样东西**必然抄错过**
+/// （实测抄成了 WSL 的虚拟网卡地址，另一头只回一个 502，人根本不知道
+/// 错在哪一步）。扫一次就没有中间那双手。
+class SyncOffer {
+  const SyncOffer({required this.host, required this.port, required this.code});
+
+  final String host;
+  final int port;
+
+  /// 六位一次性配对码。
+  final String code;
+
+  static const _scheme = 'passbook';
+  static const _prefixHost = 'sync';
+
+  /// `passbook://sync?host=192.168.1.7&port=42545&code=729980`
+  ///
+  /// 用自定义 scheme 而不是裸 JSON 或裸网址：扫出来一眼能认出这是哪来的，
+  /// 别的扫码器也不会把它当成网页打开。
+  String toUri() => Uri(
+    scheme: _scheme,
+    host: _prefixHost,
+    queryParameters: {'host': host, 'port': '$port', 'code': code},
+  ).toString();
+
+  /// 解析扫到的内容。返回 null = 这不是本应用的码（或内容不完整）。
+  ///
+  /// 两种写法都收：一是本应用给的 URI；二是「地址 端口 码」三段纯文本
+  /// ——别的扫码工具常把人能看到的内容原样显示出来，人转述时就是那样。
+  /// 宽容一点没有代价：格式严格只会在真实的扫码场景里制造失败。
+  static SyncOffer? tryParse(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return null;
+
+    final uri = Uri.tryParse(text);
+    if (uri != null && uri.scheme == _scheme && uri.host == _prefixHost) {
+      final host = uri.queryParameters['host'] ?? '';
+      final port = int.tryParse(uri.queryParameters['port'] ?? '');
+      final code = uri.queryParameters['code'] ?? '';
+      if (_valid(host, port, code)) {
+        return SyncOffer(host: host, port: port!, code: code);
+      }
+      return null;
+    }
+
+    final parts = text
+        .split(RegExp(r'[\s,;·]+'))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (parts.length == 3) {
+      final port = int.tryParse(parts[1]);
+      if (_valid(parts[0], port, parts[2])) {
+        return SyncOffer(host: parts[0], port: port!, code: parts[2]);
+      }
+    }
+    return null;
+  }
+
+  static bool _valid(String host, int? port, String code) {
+    if (host.isEmpty) return false;
+    if (port == null || port <= 0 || port > 65535) return false;
+    // 端口与码的位数都要对得上：六位是这个应用的约定，别的长度一定是
+    // 扫到了另一个东西的码，宁可拒绝，也不能拿着错的码去敲对端的门。
+    if (code.length != 6 || int.tryParse(code) == null) return false;
+    return true;
+  }
 }
