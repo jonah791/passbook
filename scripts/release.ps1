@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     打一个发布：按 app/pubspec.yaml 的版本号构建两端产物 → 生成 SHA256SUMS.txt → 创建 GitHub Release。
@@ -96,7 +96,7 @@ $lines = foreach ($file in @($winZip, $apkOut)) {
     Write-Host ("  {0}  {1}  ({2:N1} MB)" -f $hash.Substring(0, 12), $name, ($size / 1MB)) -ForegroundColor DarkGray
     "$hash  $name"
 }
-Set-Content -Path $sums -Value $lines -Encoding utf8NoBOM
+Set-Content -Path $sums -Value $lines -Encoding Ascii
 
 # ── 发布 ────────────────────────────────────────────────────
 $assets = @($winZip, $apkOut, $sums)
