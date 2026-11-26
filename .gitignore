@@ -19,5 +19,11 @@ app/android/app/*.jks
 *.log
 .DS_Store
 
+# 库文件绝不进版本库（这是密码本，一次误提交等于永久泄露）
+*.kdbx
+
+# 发布产物（由 scripts/release.ps1 生成，走 GitHub Release 分发，不进版本库）
+dist/
+
 # 本机工具链（Android SDK 等，体积大且每人不同）
 _tools/

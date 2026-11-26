@@ -6,16 +6,27 @@ import 'package:kpasslib/kpasslib.dart';
 
 import '../core/idle_guard.dart';
 import '../core/password_gen.dart';
+import '../core/update/update_controller.dart';
 import '../core/vault_controller.dart';
 import '../theme/app_theme.dart';
+import 'about_page.dart';
 import 'sync_page.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.vault, required this.idleGuard});
+  const HomePage({
+    super.key,
+    required this.vault,
+    required this.idleGuard,
+    this.updates,
+  });
 
   final VaultController vault;
   final IdleGuard idleGuard;
+
+  /// 自动更新的状态源。为 null 时页面上不出现更新入口——
+  /// 单元测试不需要为了一个图标去造一个真发 HTTP 的控制器。
+  final UpdateController? updates;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -41,12 +52,18 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     widget.vault.addListener(_onVault);
     widget.idleGuard.onIdle = _onIdle;
+    widget.updates?.addListener(_onUpdates);
     _boot();
+  }
+
+  void _onUpdates() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     widget.vault.removeListener(_onVault);
+    widget.updates?.removeListener(_onUpdates);
     widget.idleGuard
       ..disarm()
       ..onIdle = null;
@@ -199,6 +216,14 @@ class _HomePageState extends State<HomePage> {
     ).push(MaterialPageRoute(builder: (_) => SyncPage(vault: widget.vault)));
     // 同步会合并出对端的条目，回来得重读列表。
     if (mounted) setState(() {});
+  }
+
+  Future<void> _openAbout() async {
+    final updates = widget.updates;
+    if (updates == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => AboutPage(updates: updates)),
+    );
   }
 
   Future<void> _copy(String text, String label) async {
@@ -448,6 +473,7 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 14),
           Text('$count 条', style: theme.textTheme.labelSmall),
           const Spacer(),
+          if (widget.updates?.hasUpdate ?? false) _updateHint(theme),
           _quietIcon(
             icon: Icons.sync_alt,
             tooltip: '局域网同步',
@@ -465,7 +491,50 @@ class _HomePageState extends State<HomePage> {
             tooltip: '锁定（Ctrl+L）',
             onPressed: () => unawaited(_lock()),
           ),
+          const SizedBox(width: 4),
+          _quietIcon(
+            icon: Icons.info_outline,
+            tooltip: '关于与更新',
+            onPressed: () => unawaited(_openAbout()),
+          ),
         ],
+      ),
+    );
+  }
+
+  /// 有新版时先在列表头上说一句，而不是弹窗打断解锁后的第一眼。
+  /// 它只是入口：点进去才是「关于与更新」那一页。
+  Widget _updateHint(ThemeData theme) {
+    final tag = widget.updates?.release?.tag;
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        onTap: () => unawaited(_openAbout()),
+        borderRadius: BorderRadius.circular(Palette.radius),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            children: [
+              Container(
+                width: 5,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.primary,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 7),
+              Text(
+                '新版 ${tag ?? ''}',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  letterSpacing: 0.2,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

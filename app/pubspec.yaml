@@ -1,5 +1,5 @@
 name: passbook
-description: "A new Flutter project."
+description: "本地优先的跨端密码本：KDBX 库、局域网直连同步、无账号无服务端。"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -45,6 +45,10 @@ dependencies:
   shared_preferences: ^2.3.2
   # 日期格式化
   intl: ^0.20.2
+  # 读运行时的版本号（自动更新的比较基准；版本只有一个真源 = pubspec 的 version）
+  package_info_plus: ^8.3.1
+  # 下载产物的 SHA256 校验（不引 cryptography：只要摘要）
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:

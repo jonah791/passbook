@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自动更新把 APK 下载到缓存目录下的 updates/，再通过 content:// 交给系统安装器。
+  Android 7+ 直接传 file:// 会抛 FileUriExposedException，所以必须走 FileProvider。
+
+  只暴露这一个子目录：provider 一旦写宽（把整个缓存目录挂出去），所有拿到授权的
+  应用都能读走私有缓存，那就等于把「受控共享」变成「开放目录」。
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

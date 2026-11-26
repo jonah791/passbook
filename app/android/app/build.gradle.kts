@@ -44,3 +44,9 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // 自动更新用 FileProvider（androidx.core）。显式写出来，不靠 Flutter embedding
+    // 的传递依赖——传递依赖哪天变了，错误会出现在「安装器打不开」这种很远的地方。
+    implementation("androidx.core:core-ktx:1.13.1")
+}

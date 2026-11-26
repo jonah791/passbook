@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/idle_guard.dart';
+import 'core/update/update_controller.dart';
 import 'core/vault_controller.dart';
 import 'pages/home_page.dart';
 import 'theme/app_theme.dart';
@@ -15,6 +16,9 @@ final vault = VaultController();
 
 /// 全局无操作监护：5 分钟没有任何键鼠动作就锁定。
 final idleGuard = IdleGuard();
+
+/// 自动更新的状态机（一个进程一份：检查、下载、安装都只有一处判断）。
+final updates = UpdateController();
 
 void main(List<String> args) {
   WidgetsFlutterBinding.ensureInitialized();
@@ -114,6 +118,9 @@ class _PassbookAppState extends State<PassbookApp> {
       onInactive: () => unawaited(vault.flushNow()),
       onPause: () => unawaited(vault.flushNow()),
     );
+    // 启动时静默检查一次（12 小时节流）。失败不弹错——没有网络的日子
+    // 不该在开库那一刻被一个红色横幅拦住。
+    unawaited(updates.maybeAutoCheck());
   }
 
   @override
@@ -137,7 +144,7 @@ class _PassbookAppState extends State<PassbookApp> {
         onPointerSignal: (_) => idleGuard.bump(),
         child: child ?? const SizedBox.shrink(),
       ),
-      home: HomePage(vault: vault, idleGuard: idleGuard),
+      home: HomePage(vault: vault, idleGuard: idleGuard, updates: updates),
     );
   }
 }
