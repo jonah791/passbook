@@ -112,8 +112,7 @@ class _BackupPageState extends State<BackupPage> {
         try {
           final target = File(chosen);
           // 安卓由插件写好了；桌面只拿到路径，得我们自己写。
-          final already =
-              await target.exists() && await target.length() > 0;
+          final already = await target.exists() && await target.length() > 0;
           final n = already
               ? await target.length()
               : await _svc.exportTo(target);
@@ -270,7 +269,7 @@ class _BackupPageState extends State<BackupPage> {
 
             _section(theme, '导出'),
             const SizedBox(height: 14),
-            FilledButton(
+            OutlinedButton(
               onPressed: _busy ? null : _export,
               child: Text(_busy ? '处理中…' : '导出一份备份'),
             ),
@@ -296,10 +295,10 @@ class _BackupPageState extends State<BackupPage> {
 
             _section(theme, '从文件恢复'),
             const SizedBox(height: 12),
+            // 一行对比，不再各写一段原理。真正的差异在点下去之后的确认框里
+            // 还会说一次——那里才是人需要它的时候。
             Text(
-              '「合并」只把备份里多出来的补进来，现有条目一条不动——'
-              '误删的条目救不回来。\n'
-              '「替换」才是回到备份那一刻，备份之后新增的会消失。',
+              '「合并」是补进来（误删的救不回来），「替换」是回到那一刻。',
               style: TextStyle(fontSize: 13, height: 1.7, color: soft),
             ),
             const SizedBox(height: 14),
@@ -377,7 +376,7 @@ class _BackupPageState extends State<BackupPage> {
           ),
           TextButton(
             onPressed: _busy ? null : () => _delete(item.file),
-            child: const Text('删'),
+            child: const Text('删掉'),
           ),
         ],
       ),

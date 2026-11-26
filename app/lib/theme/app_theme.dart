@@ -177,6 +177,21 @@ ThemeData buildAppTheme(
         ),
       ),
     ),
+    // 描边按钮是「页内的主动作」的默认形态：一块墨只在真正的行动召唤
+    // （比如「下载并安装新版本」）时才该出现。低频的导出用墨块，会让整页
+    // 最响的东西恰好是最不常做的事。
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: text,
+        side: BorderSide(color: text, width: 0.8),
+        elevation: 0,
+        textStyle: style(size: 14, weight: FontWeight.w500, letterSpacing: 0.2),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Palette.radius),
+        ),
+      ),
+    ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: dark ? Palette.nightDeep : Palette.ink,
       contentTextStyle: style(
@@ -192,9 +207,12 @@ ThemeData buildAppTheme(
     dialogTheme: DialogThemeData(
       backgroundColor: surface,
       surfaceTintColor: Colors.transparent,
-      elevation: 0,
+      // 浮层要有一点 z 轴：内敛不是把层次也一起抹掉。极轻的阴影 + 细边，
+      // 说清「这块是临时的，离开就消失」，而不用 Material 的染色。
+      elevation: 3,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(Palette.radius + 2),
+        side: BorderSide(color: line, width: 0.5),
       ),
       titleTextStyle: style(size: 17, weight: FontWeight.w500, color: text),
       contentTextStyle: style(size: 14, height: 1.6, color: soft),
@@ -202,12 +220,26 @@ ThemeData buildAppTheme(
     popupMenuTheme: PopupMenuThemeData(
       color: surface,
       surfaceTintColor: Colors.transparent,
-      elevation: 0,
+      elevation: 2,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(Palette.radius),
         side: BorderSide(color: line, width: 0.5),
       ),
       textStyle: style(size: 14, color: text),
+    ),
+    // 开关不该用实心色块：纸上的东西是线条与印章，不是涂料。轨道留空、只画
+    // 一条细边框，朱红只出现在「点 + 框」这一圈小面积上。关着必须用淡灰点——
+    // 纸色圆点在纸底上等于隐形，那会变成一个看不出开没开的开关。
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? seal : faint,
+      ),
+      trackColor: const WidgetStatePropertyAll(Colors.transparent),
+      trackOutlineColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.selected) ? seal : line,
+      ),
+      trackOutlineWidth: const WidgetStatePropertyAll(1),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     ),
     tooltipTheme: TooltipThemeData(
       decoration: BoxDecoration(

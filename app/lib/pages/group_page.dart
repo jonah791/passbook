@@ -111,21 +111,24 @@ class _GroupPageState extends State<GroupPage> {
                           ],
                         ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: Text(
-                            '把条目分门别类。只分一层——一层就够用，'
-                            '再多要点开好几次才能找到东西。',
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              height: 1.6,
-                              color: soft,
+                      // 说明只在还没有分组时出现：那时候它是引导。已经有分组
+                      // 的人每次进来都读一遍「只分一层」，是在替人复习他已经懂的事。
+                      if (groups.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: Text(
+                              '把条目分门别类。只分一层——一层就够用，'
+                              '再多要点开好几次才能找到东西。',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                height: 1.6,
+                                color: soft,
+                              ),
                             ),
                           ),
                         ),
-                      ),
                       const Divider(height: 0.5),
                       Expanded(
                         child: groups.isEmpty

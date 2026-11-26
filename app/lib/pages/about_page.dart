@@ -107,7 +107,11 @@ class _AboutPageState extends State<AboutPage> {
                           Text(
                             '本地优先的跨端密码本：库在你自己手里，局域网直连同步，'
                             '没有账号，也没有服务器。',
-                            style: TextStyle(fontSize: 13, height: 1.7, color: soft),
+                            style: TextStyle(
+                              fontSize: 13,
+                              height: 1.7,
+                              color: soft,
+                            ),
                           ),
                           const SizedBox(height: 30),
 
@@ -141,7 +145,11 @@ class _AboutPageState extends State<AboutPage> {
                             '自动更新只从 GitHub Releases 取正式版，并且要过 SHA256 校验：'
                             '发布里没有摘要、或摘要对不上，它就不装——宁可让你手动下载，'
                             '也不让你装上没核对过的程序。',
-                            style: TextStyle(fontSize: 12.5, height: 1.7, color: soft),
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              height: 1.7,
+                              color: soft,
+                            ),
                           ),
 
                           const SizedBox(height: 34),
@@ -149,7 +157,11 @@ class _AboutPageState extends State<AboutPage> {
                           const SizedBox(height: 12),
                           Text(
                             '独立开发的小工具。库文件是标准 KDBX，随时可以拿别的密码管理器打开。',
-                            style: TextStyle(fontSize: 12.5, height: 1.7, color: soft),
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              height: 1.7,
+                              color: soft,
+                            ),
                           ),
                         ],
                       ),
@@ -168,7 +180,13 @@ class _AboutPageState extends State<AboutPage> {
     final current = widget.updates.currentVersion;
     return Row(
       children: [
-        Text('当前版本', style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurfaceVariant)),
+        Text(
+          '当前版本',
+          style: TextStyle(
+            fontSize: 13,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
         const SizedBox(width: 14),
         Text(
           current ?? '读取中…',
@@ -200,24 +218,28 @@ class _AboutPageState extends State<AboutPage> {
           children: [
             if (phase == UpdatePhase.available)
               FilledButton(
-                onPressed: updates.busy ? null : () => unawaited(updates.downloadAndInstall()),
+                onPressed: updates.busy
+                    ? null
+                    : () => unawaited(updates.downloadAndInstall()),
                 child: Text('下载并安装 ${updates.release?.tag ?? ''}'),
               )
             else
               TextButton(
-                onPressed: updates.busy ? null : () => unawaited(updates.check()),
-                child: Text(
-                  switch (phase) {
-                    UpdatePhase.checking => '检查中…',
-                    UpdatePhase.downloading || UpdatePhase.installing => '进行中…',
-                    _ => '检查更新',
-                  },
-                ),
+                onPressed: updates.busy
+                    ? null
+                    : () => unawaited(updates.check()),
+                child: Text(switch (phase) {
+                  UpdatePhase.checking => '检查中…',
+                  UpdatePhase.downloading || UpdatePhase.installing => '进行中…',
+                  _ => '检查更新',
+                }),
               ),
-            if (phase == UpdatePhase.available || phase == UpdatePhase.upToDate) ...[
+            // 「有新版」时才并排报一句版本号。已是最新的时候下面那行已经说了
+            // 同一件事，两处报同一个数只是噪。
+            if (phase == UpdatePhase.available) ...[
               const SizedBox(width: 10),
               Text(
-                '最新 ${updates.release?.tag ?? ''}',
+                '新版 ${updates.release?.tag ?? ''}',
                 style: TextStyle(fontSize: 12, color: soft),
               ),
             ],
@@ -249,7 +271,8 @@ class _AboutPageState extends State<AboutPage> {
             style: TextStyle(fontSize: 11.5, color: soft),
           ),
         ],
-        if (phase == UpdatePhase.available && (updates.release?.notes.isNotEmpty ?? false)) ...[
+        if (phase == UpdatePhase.available &&
+            (updates.release?.notes.isNotEmpty ?? false)) ...[
           const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
@@ -284,7 +307,10 @@ class _AboutPageState extends State<AboutPage> {
         Expanded(
           child: Text(
             '启动时自动检查（每 12 小时最多一次，失败不打扰）',
-            style: TextStyle(fontSize: 12.5, color: theme.colorScheme.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: 12.5,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       ],
@@ -347,9 +373,7 @@ class _AboutPageState extends State<AboutPage> {
     if (value) {
       // 想开：这一页没有主密码。如实说明下一步，而不是给一个点了没反应的开关。
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('开启指纹要等下次输主密码：先锁定，再用主密码解锁一次'),
-        ),
+        const SnackBar(content: Text('开启指纹要等下次输主密码：先锁定，再用主密码解锁一次')),
       );
       return;
     }
@@ -361,12 +385,9 @@ class _AboutPageState extends State<AboutPage> {
     setState(() => _bioOn = stillOn);
     widget.onBiometricChanged?.call();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(stillOn ? '没能关掉指纹解锁' : '已关闭指纹解锁，下次要输主密码'),
-      ),
+      SnackBar(content: Text(stillOn ? '没能关掉指纹解锁' : '已关闭指纹解锁，下次要输主密码')),
     );
   }
-
 
   /// 发布说明只截前 900 字：完整内容在 GitHub 上，塞进这一页会把版面撑垮。
   static String _trimNotes(String notes) {
