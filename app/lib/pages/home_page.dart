@@ -7,6 +7,7 @@ import 'package:kpasslib/kpasslib.dart';
 import '../core/biometric.dart';
 import '../core/idle_guard.dart';
 import '../core/password_gen.dart';
+import '../core/totp.dart';
 import '../core/update/update_controller.dart';
 import '../core/vault_controller.dart';
 import '../theme/app_theme.dart';
@@ -853,6 +854,18 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   bool _showSecret = false;
   bool _reveal = false;
 
+  /// 动态验证码（TOTP）。`otp` 字段里存的是 otpauth 链接原文，
+  /// [TotpConfig] 只是它解析出来的样子——永远以字段为准，不另存一份配置，
+  /// 否则同步到别的设备改了密钥，本地这份就悄悄过时了。
+  static const _otpField = 'otp';
+  final TextEditingController _otpInput = TextEditingController();
+  TotpConfig? _otp;
+  String? _otpError;
+  bool _otpEditing = false;
+  String _otpCode = '';
+  int _otpRemaining = 0;
+  Timer? _otpTicker;
+
   /// 字段自己不带边框：这里的排版靠留白与字号，不靠框。
   static const _bare = InputDecoration(
     border: InputBorder.none,
@@ -881,6 +894,47 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     _username.addListener(_onEdit);
     _password.addListener(_onEdit);
     _url.addListener(_onEdit);
+    _loadOtp();
+  }
+
+  /// 从字段读一次动态验证码配置。密钥本身不存在 State 里，只存在 KDBX 字段里。
+  void _loadOtp() {
+    final raw = widget.vault.fieldOf(widget.entry, _otpField);
+    if (raw.trim().isEmpty) {
+      // 字段空着是「还没设置」，不是错误——不显示红字。
+      _otp = null;
+      _otpError = null;
+    } else {
+      final parsed = parseTotp(raw);
+      _otp = parsed.config;
+      _otpError = parsed.isOk ? null : parsed.error;
+    }
+    _refreshOtpValues();
+    _startOtpTicker();
+  }
+
+  void _refreshOtpValues() {
+    final config = _otp;
+    if (config == null) {
+      _otpCode = '';
+      _otpRemaining = 0;
+      return;
+    }
+    final now = DateTime.now();
+    _otpCode = config.codeAt(now);
+    _otpRemaining = config.remainingAt(now);
+  }
+
+  /// 每秒刷新一次。只在有配置时跑，退出编辑页就停——一个看不见的定时器
+  /// 每秒唤醒一次界面，是没有理由一直付的代价。
+  void _startOtpTicker() {
+    _otpTicker?.cancel();
+    _otpTicker = null;
+    if (_otp == null) return;
+    _otpTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(_refreshOtpValues);
+    });
   }
 
   @override
@@ -888,11 +942,14 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     // 改动先进内存，落盘防抖在 controller 里；这里负责让「返回列表」也把
     // 挂起的那一次写落下去——否则快速输入后立刻返回会丢最后几个字。
     unawaited(widget.vault.flushNow());
+    _otpTicker?.cancel();
+    _otpTicker = null;
     _title.dispose();
     _body.dispose();
     _username.dispose();
     _password.dispose();
     _url.dispose();
+    _otpInput.dispose();
     super.dispose();
   }
 
@@ -917,6 +974,98 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         duration: Duration(seconds: 2),
       ),
     );
+  }
+
+  // ---- 动态验证码 ----
+
+  /// 存的是**原文**（otpauth 链接或裸密钥），解析只是为了让界面能显示码。
+  /// 存解析后的参数就麻烦了：链接里可能有别的客户端认得的参数，我们看不懂，
+  /// 但原样保存对端就还认。
+  void _saveOtp() {
+    final parsed = parseTotp(_otpInput.text);
+    if (!parsed.isOk) {
+      setState(() => _otpError = parsed.error);
+      return;
+    }
+    final raw = _otpInput.text.trim();
+    widget.vault.updateField(widget.entry, _otpField, raw);
+    widget.vault.scheduleSave();
+    setState(() {
+      _otp = parsed.config;
+      _otpError = null;
+      _otpEditing = false;
+      _otpInput.clear();
+      _refreshOtpValues();
+    });
+    _startOtpTicker();
+  }
+
+  void _cancelOtpEdit() {
+    setState(() {
+      _otpEditing = false;
+      _otpError = null;
+      _otpInput.clear();
+    });
+  }
+
+  Future<void> _removeOtp() async {
+    // 密钥删掉就再也算不出来了（除非别处还留着），值一行确认。
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删掉这个验证码？'),
+        content: const Text('密钥会被清掉。之后要再用，得重新从网站上拿一次密钥。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              '取消',
+              style: TextStyle(
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              '删除',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    widget.vault.updateField(widget.entry, _otpField, '');
+    widget.vault.scheduleSave();
+    _otpTicker?.cancel();
+    _otpTicker = null;
+    setState(() {
+      _otp = null;
+      _otpError = null;
+      _otpCode = '';
+      _otpRemaining = 0;
+    });
+  }
+
+  Future<void> _copyCode() async {
+    final code = _otpCode.replaceAll(' ', '');
+    if (code.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('验证码已复制'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// 六位分两段、八位分两段：一眼能读完，也不会抄错位。
+  static String _groupedCode(String code) {
+    if (code.length < 6) return code;
+    final half = code.length ~/ 2;
+    return '${code.substring(0, half)} ${code.substring(half)}';
   }
 
   Future<void> _delete() async {
@@ -1096,6 +1245,8 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
                               const SizedBox(height: 18),
                               _secretField(controller: _url, hint: '网址'),
                             ],
+                            const SizedBox(height: 36),
+                            _otpSection(theme),
                           ],
                         ),
                       ),
@@ -1118,6 +1269,202 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       controller: controller,
       style: const TextStyle(fontSize: 14.5, height: 1.4),
       decoration: _bare.copyWith(hintText: hint),
+    );
+  }
+
+  /// 小标题 + 一条细线。不是装饰：它在说「从这里开始是另一类信息」。
+  Widget _ruleLabel(String text, ThemeData theme) {
+    return Row(
+      children: [
+        Text(
+          text,
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 0.8,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Divider(height: 0.5, color: theme.colorScheme.outline),
+        ),
+      ],
+    );
+  }
+
+  Widget _otpSection(ThemeData theme) {
+    if (_otpEditing) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _ruleLabel('动态验证码', theme),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('otp-input'),
+            controller: _otpInput,
+            autofocus: true,
+            minLines: 1,
+            maxLines: 3,
+            style: const TextStyle(
+              fontSize: 13,
+              height: 1.5,
+              fontFamily: 'Consolas',
+            ),
+            decoration: _bare.copyWith(
+              hintText: '粘贴 otpauth:// 链接，或直接给密钥',
+            ),
+            onSubmitted: (_) => _saveOtp(),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              TextButton(onPressed: _saveOtp, child: const Text('保存')),
+              const SizedBox(width: 4),
+              TextButton(
+                onPressed: _cancelOtpEdit,
+                child: Text(
+                  '取消',
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+          if (_otpError != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              _otpError!,
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.5,
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+
+    final config = _otp;
+    if (config == null) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          key: const ValueKey('otp-add'),
+          onPressed: () => setState(() => _otpEditing = true),
+          icon: const Icon(Icons.add, size: 15),
+          label: const Text('动态验证码'),
+          style: TextButton.styleFrom(
+            foregroundColor: theme.colorScheme.onSurfaceVariant,
+            padding: EdgeInsets.zero,
+            textStyle: const TextStyle(fontSize: 13.5),
+          ),
+        ),
+      );
+    }
+
+    // 最后五秒变色：码要换了却不知道，是最常见的一类「怎么又不对」。
+    final expiring = _otpRemaining <= 5;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              '动态验证码',
+              style: TextStyle(
+                fontSize: 11,
+                letterSpacing: 0.8,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${config.algorithm.shortName} · ${config.digits} 位',
+              style: TextStyle(
+                fontSize: 11,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Divider(height: 0.5, color: theme.colorScheme.outline),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              _groupedCode(_otpCode),
+              key: const ValueKey('otp-code'),
+              style: TextStyle(
+                fontSize: 27,
+                height: 1.1,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w500,
+                fontFamily: 'Consolas',
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Text(
+                '$_otpRemaining 秒',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: expiring
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            const Spacer(),
+            IconButton(
+              tooltip: '复制验证码',
+              icon: const Icon(Icons.copy_outlined, size: 16),
+              color: theme.colorScheme.onSurfaceVariant,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => unawaited(_copyCode()),
+            ),
+            IconButton(
+              key: const ValueKey('otp-remove'),
+              tooltip: '删除这个验证码',
+              icon: const Icon(Icons.delete_outline, size: 16),
+              color: theme.colorScheme.onSurfaceVariant,
+              visualDensity: VisualDensity.compact,
+              onPressed: () => unawaited(_removeOtp()),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(1),
+          child: LinearProgressIndicator(
+            value: _otpRemaining / config.period,
+            minHeight: 2,
+            backgroundColor: theme.colorScheme.outlineVariant,
+            valueColor: AlwaysStoppedAnimation<Color>(
+              // 平时用中性灰、最后一刻才变红：两种红（品牌砖红与「要过期了」的红）
+              // 摆在一起，变色就失去意义了。
+              expiring
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        if (config.label.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            config.label,
+            style: TextStyle(
+              fontSize: 12,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
     );
   }
 

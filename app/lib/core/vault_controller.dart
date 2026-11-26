@@ -273,10 +273,18 @@ class VaultController extends ChangeNotifier implements VaultBridge {
     return entry;
   }
 
+  /// 哪些字段在 KDBX 里要按「受保护字段」加密存。
+  ///
+  /// `otp` 是 KeePassXC 约定的动态验证码字段，内容是一条 otpauth 链接——
+  /// 拿到它就能无限生成验证码，敏感程度等同于密码本身，所以与 `Password`
+  /// 同等待遇。字段名用小写：KeePassXC 就写 `otp`，大小写敏感，写错了
+  /// 在别的客户端里会变成一条普通备注。
+  static const protectedFields = {'Password', 'otp'};
+
   void updateField(KdbxEntry entry, String key, String value) {
     entry.fields[key] = KdbxTextField.fromText(
       text: value,
-      protected: key == 'Password',
+      protected: protectedFields.contains(key),
     );
     entry.times.touch();
   }
