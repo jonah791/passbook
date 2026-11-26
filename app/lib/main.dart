@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'core/biometric.dart';
 import 'core/idle_guard.dart';
 import 'core/update/update_controller.dart';
 import 'core/vault_controller.dart';
@@ -19,6 +20,9 @@ final idleGuard = IdleGuard();
 
 /// 自动更新的状态机（一个进程一份：检查、下载、安装都只有一处判断）。
 final updates = UpdateController();
+
+/// 指纹 / 面容解锁。
+final biometric = BiometricUnlock();
 
 void main(List<String> args) {
   WidgetsFlutterBinding.ensureInitialized();
@@ -144,7 +148,12 @@ class _PassbookAppState extends State<PassbookApp> {
         onPointerSignal: (_) => idleGuard.bump(),
         child: child ?? const SizedBox.shrink(),
       ),
-      home: HomePage(vault: vault, idleGuard: idleGuard, updates: updates),
+      home: HomePage(
+        vault: vault,
+        idleGuard: idleGuard,
+        updates: updates,
+        biometric: biometric,
+      ),
     );
   }
 }

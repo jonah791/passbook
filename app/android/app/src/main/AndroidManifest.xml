@@ -4,6 +4,10 @@
     <!-- 自动更新：从 GitHub Releases 下载 APK 后交给系统安装器。
          系统仍会要求用户开「安装未知应用」——应用不能自己绕过这道闸。 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- 指纹 / 面容解锁：把主密码加密存进系统密钥库，验证通过才取出。
+         只申请 USE_BIOMETRIC（Android 9 起的统一接口）；
+         USE_FINGERPRINT 是更老的接口，这里不需要，多要一个权限没好处。 -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <!-- 外联只有一个去处：GitHub（api.github.com 查版本、github.com 下产物）。
          没有遥测、没有账号、没有别的第三方域名。
          usesCleartextTraffic：局域网同步走明文 HTTP（对端是局域网内任意 IP，无法预先列域）。

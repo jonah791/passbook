@@ -2,30 +2,60 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../core/biometric.dart';
 import '../core/update/release.dart';
 import '../core/update/update_controller.dart';
 import '../theme/app_theme.dart';
 
-/// 关于与更新。一页装完：版本、更新入口、仓库地址、许可。
+/// 关于与更新。一页装完：版本、更新入口、解锁方式、仓库地址、许可。
 ///
 /// 「关于」页最容易变成装饰：塞一堆图标、版权年份、致谢名单。
 /// 这里的纪律是——**每一项都要能回答一个用户真会问的问题**，
 /// 答不出的就不放。
 class AboutPage extends StatefulWidget {
-  const AboutPage({super.key, required this.updates});
+  const AboutPage({
+    super.key,
+    required this.updates,
+    this.biometric,
+    this.onBiometricChanged,
+  });
 
   final UpdateController updates;
+
+  /// 指纹解锁。为 null 时这一页不出现「解锁」一节——
+  /// 设备没有生物识别硬件、或者测试环境里没接，都不该看到一个点不动的开关。
+  final BiometricUnlock? biometric;
+
+  /// 开关被改动后通知外面重读状态（首页的锁屏按钮依赖它）。
+  final VoidCallback? onBiometricChanged;
 
   @override
   State<AboutPage> createState() => _AboutPageState();
 }
 
 class _AboutPageState extends State<AboutPage> {
+  bool _bioOn = false;
+  bool _bioSupported = false;
+
   @override
   void initState() {
     super.initState();
     // 进来就查一次：用户点开这一页，本来就是想问「有没有新版」。
     unawaited(widget.updates.check());
+    unawaited(_loadBiometric());
+  }
+
+  /// 开关状态每次都从密钥库复读，不信内存里的标志位。
+  Future<void> _loadBiometric() async {
+    final bio = widget.biometric;
+    if (bio == null) return;
+    final supported = await bio.isSupported();
+    final on = supported && await bio.isEnabled();
+    if (!mounted) return;
+    setState(() {
+      _bioSupported = supported;
+      _bioOn = on;
+    });
   }
 
   @override
@@ -90,6 +120,12 @@ class _AboutPageState extends State<AboutPage> {
                           _autoCheckRow(theme),
 
                           const SizedBox(height: 34),
+                          if (widget.biometric != null) ...[
+                            _section(theme, '解锁'),
+                            const SizedBox(height: 12),
+                            _biometricRow(theme),
+                            const SizedBox(height: 34),
+                          ],
                           _section(theme, '仓库'),
                           const SizedBox(height: 12),
                           SelectableText(
@@ -254,6 +290,83 @@ class _AboutPageState extends State<AboutPage> {
       ],
     );
   }
+
+  /// 指纹解锁开关。开启这一侧刻意不就地做：
+  /// 存进密钥库的必须是主密码本身，而这一页拿不到它（也不该再要一次）。
+  /// 所以开启走「下次用主密码解锁时的提示」，这里只负责关闭与说明。
+  Widget _biometricRow(ThemeData theme) {
+    final soft = theme.colorScheme.onSurfaceVariant;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            SizedBox(
+              width: 36,
+              height: 28,
+              child: Switch(
+                value: _bioOn,
+                onChanged: _bioSupported
+                    ? (value) => unawaited(_toggleBiometric(value))
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '指纹解锁',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          !_bioSupported
+              ? '这台设备当前无法使用指纹解锁。'
+              : _bioOn
+              ? '已开启。打开应用时按一下指纹就能进，不必再输主密码。\n'
+                    '代价说清楚：为了做到这一点，主密码会多存一份在系统密钥库'
+                    '（安卓 Keystore / Windows 凭据管理器）。设备被 root、'
+                    '或系统密钥库被攻破时，那一份可能被取出。\n'
+                    '所以它是省事的快捷方式，不是更强的加密——'
+                    '库文件本身的强度没变，仍由主密码决定。'
+              : '未开启。用主密码解锁一次之后，会问你要不要开。',
+          style: TextStyle(fontSize: 12.5, height: 1.7, color: soft),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _toggleBiometric(bool value) async {
+    final bio = widget.biometric;
+    if (bio == null) return;
+    if (value) {
+      // 想开：这一页没有主密码。如实说明下一步，而不是给一个点了没反应的开关。
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('开启指纹要等下次输主密码：先锁定，再用主密码解锁一次'),
+        ),
+      );
+      return;
+    }
+    await bio.disable();
+    if (!mounted) return;
+    // 删除可能失败（密钥库坏了）。复读一次再报，不拿「没报错」当「关掉了」。
+    final stillOn = await bio.isEnabled();
+    if (!mounted) return;
+    setState(() => _bioOn = stillOn);
+    widget.onBiometricChanged?.call();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(stillOn ? '没能关掉指纹解锁' : '已关闭指纹解锁，下次要输主密码'),
+      ),
+    );
+  }
+
 
   /// 发布说明只截前 900 字：完整内容在 GitHub 上，塞进这一页会把版面撑垮。
   static String _trimNotes(String notes) {

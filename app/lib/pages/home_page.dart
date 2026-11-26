@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:kpasslib/kpasslib.dart';
 
+import '../core/biometric.dart';
 import '../core/idle_guard.dart';
 import '../core/password_gen.dart';
 import '../core/update/update_controller.dart';
@@ -20,6 +21,7 @@ class HomePage extends StatefulWidget {
     required this.vault,
     required this.idleGuard,
     this.updates,
+    this.biometric,
   });
 
   final VaultController vault;
@@ -28,6 +30,10 @@ class HomePage extends StatefulWidget {
   /// 自动更新的状态源。为 null 时页面上不出现更新入口——
   /// 单元测试不需要为了一个图标去造一个真发 HTTP 的控制器。
   final UpdateController? updates;
+
+  /// 指纹解锁。为 null 时整套入口都不出现，退化成纯密码解锁——
+  /// 设备没有生物识别硬件、或单元测试里不想碰平台通道，都走这条路。
+  final BiometricUnlock? biometric;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -40,6 +46,14 @@ class _HomePageState extends State<HomePage> {
   bool _creating = false;
   bool _autoLocked = false;
   bool _locking = false;
+
+  /// 这台设备有没有可用的生物识别。关的时候也留着它——
+  /// 「能力」与「选择」是两件事：关掉指纹不等于硬件消失了。
+  bool _bioSupported = false;
+
+  /// 指纹解锁是不是开着。以密钥库里有没有那份密码为准（每次从磁盘复读）。
+  bool _bioEnabled = false;
+  bool _bioBusy = false;
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   final _search = TextEditingController();
@@ -85,11 +99,25 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _boot() async {
     final path = await widget.vault.readLastPath();
+    final bio = widget.biometric;
+    var supported = false;
+    var enabled = false;
+    if (bio != null) {
+      // supported 与 enabled 分开问：前者是「硬件在不在」，后者是「开没开」。
+      supported = await bio.isSupported();
+      enabled = supported && await bio.isEnabled();
+    }
     if (!mounted) return;
     setState(() {
       _lastPath = path;
+      _bioSupported = supported;
+      _bioEnabled = enabled;
       _checking = false;
     });
+    // 开过指纹、库也在：启动就直接问，按一下就进去（不用先看一眼密码框）。
+    if (enabled && path != null) {
+      unawaited(_unlockWithBiometric(auto: true));
+    }
   }
 
   Future<void> _unlock() async {
@@ -112,10 +140,100 @@ class _HomePageState extends State<HomePage> {
       _error = ok ? null : widget.vault.lastError;
     });
     if (ok) {
+      final used = _password.text;
       _password.clear();
       widget.idleGuard.arm();
       _focusSearchSoon();
+      _offerBiometric(used);
     }
+  }
+
+  /// 用指纹取主密码来开库。
+  ///
+  /// [auto] 是「启动时自动试一次」的意思：那时候用户还没表达意图，
+  /// 所以取消、验证不过、读不出来都**静默退回手输**，不弹错误。
+  Future<void> _unlockWithBiometric({bool auto = false}) async {
+    final bio = widget.biometric;
+    final path = _lastPath;
+    if (bio == null || path == null || _busy || _bioBusy) return;
+    setState(() {
+      _bioBusy = true;
+      if (!auto) _error = null;
+    });
+    final saved = await bio.takePassword();
+    if (!mounted) return;
+    if (saved == null) {
+      setState(() => _bioBusy = false);
+      return;
+    }
+    final ok = await widget.vault.open(path, saved);
+    if (!mounted) return;
+    if (!ok) {
+      // 存的密码打不开这个库：改过主密码，或者换了一个库。
+      // 留着它只会让之后每次指纹解锁都注定失败，还要多等一次验证——清掉，说清楚。
+      await bio.forget();
+      if (!mounted) return;
+      setState(() {
+        _bioBusy = false;
+        _bioEnabled = false;
+        _error = '指纹里存的那份密码打不开这个库，已关掉指纹解锁。请输入主密码';
+      });
+      return;
+    }
+    setState(() {
+      _bioBusy = false;
+      _unlocked = true;
+      _autoLocked = false;
+      _error = null;
+    });
+    widget.idleGuard.arm();
+    _focusSearchSoon();
+  }
+
+  /// 密码刚验对的那一刻问一句要不要开指纹。
+  ///
+  /// 只在这一刻问是有原因的：此时主密码就在手上，存进密钥库不需要他再输一遍。
+  /// 用提示条而不是对话框——不打断，也不要他先回答才能继续用。
+  void _offerBiometric(String password) {
+    final bio = widget.biometric;
+    if (bio == null || _bioEnabled || !_bioSupported || password.isEmpty) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('要不要开启指纹解锁？之后按一下就进'),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: '开启',
+          onPressed: () => unawaited(_enableBiometric(bio, password)),
+        ),
+      ),
+    );
+  }
+
+  /// 开启指纹：先验证一次（证明是本人），再把密码存进系统密钥库。
+  Future<void> _enableBiometric(BiometricUnlock bio, String password) async {
+    final ok = await bio.enable(password);
+    if (!mounted) return;
+    setState(() => _bioEnabled = ok);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? '已开启指纹解锁' : '没能开启指纹解锁'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 关掉指纹（关于页用）。关掉之后那份密码就没了，下次要手输。
+  Future<void> setBiometricEnabled(bool value) async {
+    final bio = widget.biometric;
+    if (bio == null) return;
+    if (value) {
+      // 开启需要主密码，而这里拿不到——只能走「解锁成功时的提示」那条路。
+      // 所以这里只做关闭，开启方向如实返回（界面上也会说明）。
+      return;
+    }
+    await bio.disable();
+    if (!mounted) return;
+    setState(() => _bioEnabled = false);
   }
 
   Future<void> _create() async {
@@ -231,8 +349,24 @@ class _HomePageState extends State<HomePage> {
     final updates = widget.updates;
     if (updates == null) return;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => AboutPage(updates: updates)),
+      MaterialPageRoute<void>(
+        builder: (_) => AboutPage(
+          updates: updates,
+          biometric: widget.biometric,
+          // 关于页可能把指纹关掉了——回来要重读，锁屏页那个按钮依赖它。
+          onBiometricChanged: () => unawaited(_refreshBiometric()),
+        ),
+      ),
     );
+  }
+
+  /// 从磁盘复读指纹开关状态。不信内存：别的地方（关于页）可能刚改过。
+  Future<void> _refreshBiometric() async {
+    final bio = widget.biometric;
+    if (bio == null) return;
+    final on = await bio.isEnabled();
+    if (!mounted) return;
+    setState(() => _bioEnabled = on);
   }
 
   Future<void> _copy(String text, String label) async {
@@ -319,6 +453,25 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ),
+                // 开了指纹之后，这一行是第一选择；密码框仍然在，随时可以改用它。
+                if (hasVault && _bioEnabled) ...[
+                  const SizedBox(height: 6),
+                  TextButton.icon(
+                    onPressed: (_busy || _bioBusy)
+                        ? null
+                        : () => unawaited(_unlockWithBiometric()),
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      foregroundColor: theme.colorScheme.primary,
+                    ),
+                    icon: const Icon(Icons.fingerprint, size: 17),
+                    label: Text(
+                      _bioBusy ? '验证中…' : '用指纹解锁',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
                 if (!hasVault) ...[
                   const SizedBox(height: 18),
                   TextField(

@@ -5,7 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -16,8 +16,12 @@ import java.io.File
  * 应用不能自替换，也**不能绕过**「安装未知应用」那道用户闸：
  * 没开权限时把用户送到那个开关前，然后如实返回 false（Dart 侧会报出来），
  * 不假装已开始安装。
+ *
+ * 基类必须是 FlutterFragmentActivity（不是 FlutterActivity）：
+ * 生物识别的系统弹窗走 androidx.biometric，它要一个 FragmentActivity。
+ * 用 FlutterActivity 时指纹对话框会直接抛「no_fragment_activity」。
  */
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "passbook/updater")
@@ -36,6 +40,44 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     else -> result.notImplemented()
+                }
+            }
+        // 主密码的加密存放（指纹解锁用）。桌面端没有这条通道，Dart 侧会如实降级。
+        val secure = SecureStore(applicationContext)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "passbook/secure")
+            .setMethodCallHandler { call, result ->
+                val key = call.argument<String>("key")
+                try {
+                    when (call.method) {
+                        "available" -> result.success(true)
+                        "read" -> {
+                            if (key.isNullOrEmpty()) {
+                                result.error("bad_args", "缺少 key 参数", null)
+                                return@setMethodCallHandler
+                            }
+                            result.success(secure.read(key))
+                        }
+                        "write" -> {
+                            val value = call.argument<String>("value")
+                            if (key.isNullOrEmpty() || value == null) {
+                                result.error("bad_args", "缺少 key 或 value 参数", null)
+                                return@setMethodCallHandler
+                            }
+                            secure.write(key, value)
+                            result.success(null)
+                        }
+                        "delete" -> {
+                            if (key.isNullOrEmpty()) {
+                                result.error("bad_args", "缺少 key 参数", null)
+                                return@setMethodCallHandler
+                            }
+                            secure.delete(key)
+                            result.success(null)
+                        }
+                        else -> result.notImplemented()
+                    }
+                } catch (e: Exception) {
+                    result.error("secure_failed", e.message ?: e.toString(), null)
                 }
             }
     }

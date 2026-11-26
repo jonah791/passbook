@@ -49,6 +49,16 @@ dependencies:
   package_info_plus: ^8.3.1
   # 下载产物的 SHA256 校验（不引 cryptography：只要摘要）
   crypto: ^3.0.6
+  # 指纹 / 面容解锁：弹系统生物识别界面（安卓走 androidx.biometric，Windows 走 Hello）
+  local_auth: ^3.0.2
+  # 指纹弹窗的中文文案。local_auth 顶层只导出三个类，各平台的文案类在平台包里；
+  # 它的默认文案是英文（源码注释写明 Currently supports English），不自己给就违反中文化要求
+  local_auth_android: ^2.0.8
+  # 主密码的加密存放【自己写，不用 flutter_secure_storage】：
+  # 那个包的 Windows 实现要 ATL 与现场下载 nuget 包，本机没有 ATL 组件、
+  # 也不该为了一个可选功能去改开发机环境。自己写的那份只依赖 AndroidKeyStore，
+  # 桌面端没有通道时如实降级（界面上这个功能就不出现）。
+  # 实现在 android/.../SecureStore.kt 与 lib/core/secure_store.dart。
 
 dev_dependencies:
   flutter_test:
