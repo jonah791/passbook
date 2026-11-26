@@ -59,6 +59,9 @@
    没 flush 就 close 必须真的丢，否则那条 flush 就是装饰）
 5. 生成的密码四类字符各至少一个、不含 0 O 1 l I（`app/test/password_gen_test.dart`）
 6. Windows 与 Android 两个平台都能完成上述各条
+   ⚠ **当前只有 Windows 验过**。Android 工具链没装（`flutter doctor` 报
+   `Unable to locate Android SDK`），所以在装上 SDK 之前这一条是**未验证**，
+   不是「已通过」——别把跨平台当成已经兑现的事实。
 
 **体验**
 - 首次使用只设一个主密码，库固定放文档目录 `passbook.kdbx`，不让人选文件
