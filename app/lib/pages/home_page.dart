@@ -8,6 +8,7 @@ import '../core/idle_guard.dart';
 import '../core/password_gen.dart';
 import '../core/vault_controller.dart';
 import '../theme/app_theme.dart';
+import 'sync_page.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
 class HomePage extends StatefulWidget {
@@ -189,6 +190,14 @@ class _HomePageState extends State<HomePage> {
         builder: (_) => NoteEditorPage(vault: widget.vault, entry: entry),
       ),
     );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openSync() async {
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => SyncPage(vault: widget.vault)));
+    // 同步会合并出对端的条目，回来得重读列表。
     if (mounted) setState(() {});
   }
 
@@ -439,6 +448,12 @@ class _HomePageState extends State<HomePage> {
           const SizedBox(width: 14),
           Text('$count 条', style: theme.textTheme.labelSmall),
           const Spacer(),
+          _quietIcon(
+            icon: Icons.sync_alt,
+            tooltip: '局域网同步',
+            onPressed: () => unawaited(_openSync()),
+          ),
+          const SizedBox(width: 4),
           _quietIcon(
             icon: Icons.add,
             tooltip: '新建（Ctrl+N）',

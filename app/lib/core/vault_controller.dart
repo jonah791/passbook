@@ -15,6 +15,10 @@ class VaultController extends ChangeNotifier {
   String? _filePath;
   String? _lastError;
 
+  /// 本次解锁期间的主密码，只活在内存里、锁定时丢弃。
+  /// 同步要解密对端传回的库，没有它就只能在每次同步时再问一遍密码。
+  String? _sessionPassword;
+
   Timer? _saveTimer;
   bool _dirty = false;
   Future<void>? _inflight;
@@ -122,6 +126,7 @@ class VaultController extends ChangeNotifier {
       db.createGroup(parent: db.root, name: '默认分组');
       _db = db;
       _filePath = path;
+      _sessionPassword = password;
       await save();
       await _rememberPath(path);
       notifyListeners();
@@ -146,6 +151,7 @@ class VaultController extends ChangeNotifier {
       );
       _db = db;
       _filePath = path;
+      _sessionPassword = password;
       await _rememberPath(path);
       notifyListeners();
       return true;
@@ -250,11 +256,14 @@ class VaultController extends ChangeNotifier {
   }
 
   void deleteEntry(KdbxEntry entry) {
-    final parent = entry.parent;
-    if (parent is KdbxGroup) {
-      parent.entries.remove(entry);
-      notifyListeners();
-    }
+    final db = _db;
+    if (db == null) return;
+    // 必须走 `move(target: null)`，它会写墓碑（deletedObjects）——同步才认得出
+    // 「这条被删了」，否则合并时原样复活。
+    // 不能用 `remove()`：那个会挪进回收站（库在没有回收站时会顺手建一个），
+    // 条目仍在库里，对端合并后照样看得见。
+    db.move(item: entry);
+    notifyListeners();
   }
 
   String fieldOf(KdbxEntry entry, String key) => entry.fields[key]?.text ?? '';
@@ -283,6 +292,78 @@ class VaultController extends ChangeNotifier {
     _dirty = false;
     _db = null;
     _filePath = null;
+    _sessionPassword = null; // 锁上就把钥匙丢了，不留内存副本
     notifyListeners();
+  }
+
+  /// 导出当前库的密文，用于同步。
+  /// **线上永远只走这个**——链路是局域网的，但内容始终是 KDBX 密文。
+  Future<Uint8List> exportBytes() async {
+    final db = _db;
+    if (db == null) throw StateError('库没打开');
+    return Uint8List.fromList(await db.save());
+  }
+
+  /// 与对端库合并（对端传过来的是密文，这里用本次会话的主密码解开）。
+  ///
+  /// 用库自带的 `KdbxDatabase.merge`：它是 2P-set + 墓碑的正确实现，
+  /// 覆盖「对端新增 / 本地新增 / 两边都改（按修改时间）」以及删除，
+  /// 自己手写一份 CRDT 只会把删除传播写错。
+  Future<MergeResult> mergeRemote(Uint8List remoteBytes) async {
+    final db = _db;
+    final password = _sessionPassword;
+    if (db == null || password == null) throw StateError('库没打开');
+    final remote = await KdbxDatabase.fromBytes(
+      data: remoteBytes,
+      credentials: KdbxCredentials(
+        password: ProtectedData.fromString(password),
+      ),
+    );
+
+    final before = _idsOf(db);
+    db.merge(remote);
+    final after = _idsOf(db);
+
+    _dirty = true;
+    await flushNow();
+    notifyListeners();
+    return MergeResult(
+      before: before.length,
+      after: after.length,
+      added: after.difference(before).length,
+      removed: before.difference(after).length,
+    );
+  }
+
+  /// 用 [KdbxUuid] 本身做键，**不要 `toString()`**：它没重写 toString，
+  /// 每个条目都会返回 "Instance of 'KdbxUuid'"，一套 Set 把所有条目折成一条。
+  /// （它自带正确的 == / hashCode，拿对象当键是安全的。）
+  static Set<KdbxUuid> _idsOf(KdbxDatabase db) => {
+    for (final e in db.root.allEntries) e.uuid,
+  };
+}
+
+/// 一次合并的结果，供界面告示「这次同步到底动了几条」。
+class MergeResult {
+  const MergeResult({
+    required this.before,
+    required this.after,
+    required this.added,
+    required this.removed,
+  });
+
+  final int before;
+  final int after;
+  final int added;
+  final int removed;
+
+  bool get changed => added > 0 || removed > 0;
+
+  String get summary {
+    if (!changed) return '两边已经一致（$after 条）';
+    final parts = <String>[];
+    if (added > 0) parts.add('新增 $added');
+    if (removed > 0) parts.add('移除 $removed');
+    return '${parts.join(' · ')}，现在 $after 条';
   }
 }

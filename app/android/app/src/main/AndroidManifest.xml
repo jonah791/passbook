@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 局域网同步：本机开 HTTP 端点给对端拉库，也用客户端去连对端。
+         注意这只是网络能力，应用本身不做任何外联（不查更新、不取图标、无遥测）。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="passbook"
         android:name="${applicationName}"
