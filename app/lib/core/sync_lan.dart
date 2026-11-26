@@ -39,22 +39,54 @@ class LanSync {
   int? get port => _server?.port;
   String? get code => serving ? _code : null;
 
-  /// 本机在局域网里的 IPv4（不含回环）。空列表 = 没连局域网。
+  /// 本机在局域网里的 IPv4（不含回环）。
+  ///
+  /// **虚拟网卡的地址要剔掉。** 装了 WSL 的 Windows 会多出一块
+  /// `vEthernet (WSL)`，地址常见 172.19.x.x，而它排得比真实网卡还前——
+  /// 显示给用户之后，另一台设备照着它连，只会连到别的东西（实测拿回了
+  /// 代理的 502）。这类地址不是「局域网地址」，它对别的设备不存在。
+  ///
+  /// 剔干净时把虚拟的也还回去：宁可显示一个可能连不到的地址，也不要让
+  /// 「这台设备」区空着——空着会让人以为是功能坏了，而那时人至少能试。
   static Future<List<String>> localIPv4() async {
     try {
       final interfaces = await NetworkInterface.list(
         type: InternetAddressType.IPv4,
         includeLoopback: false,
       );
-      return [
-        for (final i in interfaces)
-          for (final a in i.addresses)
-            if (!a.isLoopback) a.address,
-      ];
+      final real = <String>[];
+      final virtual = <String>[];
+      for (final i in interfaces) {
+        final isVirtual = isVirtualNicName(i.name);
+        for (final a in i.addresses) {
+          if (a.isLoopback) continue;
+          // 169.254.x.x 是「没拿到 DHCP 时自己编的」链路本地地址：同一根网线
+          // 上的两台机器理论上能通，但接在路由器上的设备之间一律不通。把它
+          // 摆在「另一台填这个」的位置上，等于给了一个必然失败的答案。
+          if (isLinkLocalV4(a.address)) continue;
+          (isVirtual ? virtual : real).add(a.address);
+        }
+      }
+      return real.isNotEmpty ? real : virtual;
     } catch (_) {
       return const [];
     }
   }
+
+  /// 看起来是不是链路本地地址（169.254.0.0/16）。
+  static bool isLinkLocalV4(String address) => address.startsWith('169.254.');
+
+  /// 虚拟网卡的适配器名。按名字判断不完美（各系统语言不同），所以这里只
+  /// 用来**分先后**：一真网卡都找不着时仍然把虚拟的还回去。
+  static final _virtualNicPattern = RegExp(
+    r'vEthernet|WSL|Docker|VMware|VirtualBox|Hyper-V|Loopback|Tailscale|ZeroTier',
+    caseSensitive: false,
+  );
+
+  /// 这个名字看起来是不是虚拟网卡。公开只为可测——真机上取网卡列表的结果
+  /// 不可断言，能断言的是这条判断本身。
+  static bool isVirtualNicName(String name) =>
+      _virtualNicPattern.hasMatch(name);
 
   /// 开始等对端，返回本次配对码。端口由系统分配，避免撞车。
   ///
@@ -162,8 +194,11 @@ class LanSync {
         uri,
       )).close().timeout(const Duration(seconds: 20));
       if (getRes.statusCode != HttpStatus.ok) {
-        final why = await getRes.transform(utf8.decoder).join();
-        throw LanSyncException('对方不让拉（${getRes.statusCode}）：$why');
+        final body = await getRes.transform(utf8.decoder).join();
+        throw LanSyncException(
+          '对方不让拉（${getRes.statusCode}）'
+          '${explainSyncFailure(getRes.statusCode, body)}',
+        );
       }
       final remote = await _readAll(getRes);
       final result = await vault.mergeRemote(remote);
@@ -185,8 +220,7 @@ class LanSync {
     }
   }
 
-  /// 把响应体读成字节。
-  ///
+  /// 把响应体读成字节。  ///
   /// 不用 `flutter/foundation` 的 `consolidateHttpClientResponseBytes`：
   /// 这一层要对「没有 Flutter 的环境」保持可用（命令行对端、跨进程联调）。
   static Future<Uint8List> _readAll(HttpClientResponse res) async {
@@ -207,4 +241,25 @@ class LanSyncException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// 失败时给一句能动手的话，而不是一个状态码加一个冒号。
+///
+/// 502 / 503 / 504 几乎不是 passbook 自己回的——它的服务端只会回
+/// 404 / 403 / 405 / 500。这些码来自中间的代理或网关：这台设备开着
+/// TUN 或全局模式的代理时，连内网地址也会被接管，于是「对方不让拉」
+/// 后面什么理由都没有（实测就是这样：空的口号什么都说明不了）。
+/// 把这一层说破，人才知道该去关代理，还是该给局域网加一条直连规则。
+String explainSyncFailure(int status, String body) {
+  final detail = body.trim();
+  if (detail.isNotEmpty) return '：$detail';
+  return switch (status) {
+    502 || 503 || 504 =>
+      '：对方没有说明原因。这个码通常来自中间的代理或网关——'
+          '如果这台设备上开着代理（尤其是 TUN 或全局模式），把它关掉，'
+          '或者让局域网地址走直连，再试一次。',
+    404 => '：这个端口上不是 passbook 的同步服务，确认地址与端口抄对了。',
+    403 => '：配对码不对，用对端屏幕上此刻显示的那个。',
+    _ => '：对方没有说明原因。',
+  };
 }

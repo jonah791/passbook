@@ -166,7 +166,9 @@ class _SyncPageState extends State<SyncPage> {
                             Padding(
                               padding: const EdgeInsets.only(bottom: 4),
                               child: SelectableText(
-                                '$_myPort 端口 · $ip',
+                                // 地址在前、端口在后：与下面「连另一台」的两个
+                                // 输入框同序。反过来写，人抄的时候容易抄反。
+                                '$ip   端口 $_myPort',
                                 style: const TextStyle(
                                   fontSize: 14.5,
                                   fontFamily: 'Consolas',
