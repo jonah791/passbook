@@ -64,7 +64,11 @@
    不是「已通过」——别把跨平台当成已经兑现的事实。
 
 **体验**
-- 首次使用只设一个主密码，库固定放文档目录 `passbook.kdbx`，不让人选文件
+- 首次使用只设一个主密码，不让人选文件。库**优先放文档目录**；文档目录写不进去时
+  自动退到用户数据目录（`%APPDATA%\com.passbook\passbook`），并把实际路径告诉用户。
+  判据：这台机器开着 Windows「受控文件夹访问」，文档目录读得到、写不进，报错还是
+  误导性的「找不到文件」⇒ **只查「目录存在」会误判成可用，必须实测写一次**
+  （`app/test/vault_path_test.dart` + `passbook.exe --selftest` 真机复验）
 - 输入即保存（800ms 防抖）；返回列表 / 窗口失焦 / 自动锁定都会先落盘，不丢字
 - 解锁后光标已在搜索框；Ctrl+F 搜索 / Ctrl+N 新建 / Ctrl+L 锁定 / Esc 返回
 - 每个版本必须过：`flutter analyze` 0 issues · `flutter test` 全绿 · `flutter build windows`
