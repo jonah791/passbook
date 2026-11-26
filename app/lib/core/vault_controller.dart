@@ -34,15 +34,13 @@ class VaultController extends ChangeNotifier implements VaultBridge {
   String? get lastError => _lastError;
   KdbxGroup? get root => _db?.root;
 
-  List<KdbxEntry> get allEntries {
-    final entries = _db?.root.allEntries ?? <KdbxEntry>[];
-    // 新的在前：便签应用的心智是「最近记的在上面」。
-    entries.sort(
-      (a, b) =>
-          b.times.creation.timeOrZero.compareTo(a.times.creation.timeOrZero),
-    );
-    return entries;
-  }
+  List<KdbxEntry> get allEntries =>
+      _newestFirst(_db?.root.allEntries ?? <KdbxEntry>[]);
+
+  /// 新的在前：便签应用的心智是「最近记的在上面」。
+  static List<KdbxEntry> _newestFirst(List<KdbxEntry> entries) => entries..sort(
+    (a, b) => b.times.creation.timeOrZero.compareTo(a.times.creation.timeOrZero),
+  );
 
   KdbxGroup get rootGroup {
     final group = _db?.root;
@@ -149,7 +147,8 @@ class VaultController extends ChangeNotifier implements VaultBridge {
         credentials: credentials,
         name: 'Passbook',
       );
-      db.createGroup(parent: db.root, name: '默认分组');
+      // 新库不预设分组：一个空壳分组会让第一次打开的人以为「东西被放进去了」，
+      // 需要分类时在「分组整理」里建就行。
       _db = db;
       _filePath = path;
       _sessionPassword = password;
@@ -297,6 +296,88 @@ class VaultController extends ChangeNotifier implements VaultBridge {
     // 不能用 `remove()`：那个会挪进回收站（库在没有回收站时会顺手建一个），
     // 条目仍在库里，对端合并后照样看得见。
     db.move(item: entry);
+    notifyListeners();
+  }
+
+  // ───────────────────────── 分组 ─────────────────────────
+
+  /// 分组只有一层：根分组的直接子组。
+  ///
+  /// 不做无限层级——便签式的心智里一层分类就够，多一层要多点一次，小屏上也
+  /// 很难看清自己在哪。KDBX 结构本身支持嵌套，别的客户端建的深层分组照旧
+  /// 存在、也照旧参与同步，只是这个界面不让人再往下建。
+  ///
+  /// 回收站不算分组：它的 uuid 记在 meta 里，判断只看 uuid，
+  /// **绝不调用 `KdbxDatabase.recycleBin`**——那个取值器在 uuid 找不到对应组
+  /// 时会顺手建一个回收站，读一下就改了库。
+  List<KdbxGroup> get groups {
+    final db = _db;
+    if (db == null) return const <KdbxGroup>[];
+    final bin = db.meta.recycleBinUuid;
+    final list = db.root.groups.where((g) => g.uuid != bin).toList();
+    list.sort((a, b) => a.name.compareTo(b.name));
+    return list;
+  }
+
+  /// 条目所在的分组；直接挂在根分组下（或落在回收站里）返回 null，
+  /// 界面上叫「未分组」。
+  KdbxGroup? groupOf(KdbxEntry entry) {
+    final db = _db;
+    final parent = entry.parent;
+    if (db == null || parent == null) return null;
+    if (parent.uuid == db.root.uuid) return null;
+    if (parent.uuid == db.meta.recycleBinUuid) return null;
+    return parent;
+  }
+
+  /// 某个分组里的条目；[group] 为 null 时是全库。都按「新的在前」。
+  List<KdbxEntry> entriesOf(KdbxGroup? group) =>
+      group == null ? allEntries : _newestFirst(group.allEntries);
+
+  /// 按名称新建分组，挂在根分组下。名称去首尾空白；重名的允许——
+  /// 分组靠 uuid 认身份，不是靠名字（改名不影响任何条目）。
+  KdbxGroup createGroup(String name) {
+    final db = _db!;
+    final group = db.createGroup(parent: db.root, name: name.trim());
+    scheduleSave();
+    notifyListeners();
+    return group;
+  }
+
+  void renameGroup(KdbxGroup group, String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed == group.name) return;
+    group.name = trimmed;
+    group.times.touch();
+    scheduleSave();
+    notifyListeners();
+  }
+
+  /// 删掉一个分组，里面的条目**不跟着消失**——用户想删的是「分类」这个壳，
+  /// 不是里面记着的东西。
+  ///
+  /// 条目与子组先上移到根分组，再删空壳。删用 `move(target: null)` 写墓碑，
+  /// 对端同步时才认得出「这个组没了」，否则合并后它原样复活。
+  void deleteGroup(KdbxGroup group) {
+    final db = _db;
+    if (db == null) return;
+    for (final entry in List<KdbxEntry>.of(group.entries)) {
+      db.move(item: entry, target: db.root);
+    }
+    for (final child in List<KdbxGroup>.of(group.groups)) {
+      db.move(item: child, target: db.root);
+    }
+    db.move(item: group);
+    scheduleSave();
+    notifyListeners();
+  }
+
+  /// 把条目挪进 [target]；null = 挪回根分组（未分组）。
+  void moveEntry(KdbxEntry entry, KdbxGroup? target) {
+    final db = _db;
+    if (db == null) return;
+    db.move(item: entry, target: target ?? db.root);
+    scheduleSave();
     notifyListeners();
   }
 

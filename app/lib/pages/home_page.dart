@@ -13,6 +13,7 @@ import '../core/vault_controller.dart';
 import '../theme/app_theme.dart';
 import 'about_page.dart';
 import 'backup_page.dart';
+import 'group_page.dart';
 import 'sync_page.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
@@ -60,6 +61,10 @@ class _HomePageState extends State<HomePage> {
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   String _query = '';
+
+  /// 当前筛的分组；null = 全部。按 uuid 记而不是按对象记：分组被删掉重建
+  /// 之后对象会变，uuid 才认得出「还是不是同一个」。
+  KdbxUuid? _groupFilterId;
   String? _error;
   bool _busy = false;
 
@@ -308,8 +313,26 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _newNote() async {
-    final entry = widget.vault.addEntry();
+    // 正筛着某个分组时，新建的条目直接进那个组——否则记完还得再挪一次。
+    final entry = widget.vault.addEntry(parent: _filteredGroup());
     await _openEditor(entry);
+  }
+
+  /// 当前筛的分组；筛的组已经被删掉时返回 null（当作「全部」）。
+  KdbxGroup? _filteredGroup() {
+    final id = _groupFilterId;
+    if (id == null) return null;
+    for (final group in widget.vault.groups) {
+      if (group.uuid == id) return group;
+    }
+    return null;
+  }
+
+  Future<void> _openGroups() async {
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => GroupPage(vault: widget.vault)));
+    if (mounted) setState(() {});
   }
 
   /// Ctrl+F：聚焦搜索框并全选旧词，直接打字就是新查询。
@@ -556,7 +579,7 @@ class _HomePageState extends State<HomePage> {
   // ───────────────────────── 列表 ─────────────────────────
 
   Widget _listScaffold() {
-    final entries = widget.vault.allEntries.where((entry) {
+    final entries = widget.vault.entriesOf(_filteredGroup()).where((entry) {
       if (_query.trim().isEmpty) return true;
       final q = _query.trim().toLowerCase();
       return widget.vault.fieldOf(entry, 'Title').toLowerCase().contains(q) ||
@@ -588,6 +611,7 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       _listHeader(entries.length),
                       _searchRow(),
+                      _groupBar(),
                       const Divider(height: 0.5),
                       Expanded(
                         child: entries.isEmpty
@@ -622,51 +646,67 @@ class _HomePageState extends State<HomePage> {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 14, 8),
-      child: Row(
-        children: [
-          Text(
-            'passbook',
-            style: TextStyle(
-              fontSize: 11,
-              letterSpacing: 3.4,
-              fontWeight: FontWeight.w500,
-              color: theme.colorScheme.primary,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Text('$count 条', style: theme.textTheme.labelSmall),
-          const Spacer(),
-          if (widget.updates?.hasUpdate ?? false) _updateHint(theme),
-          _quietIcon(
-            icon: Icons.sync_alt,
-            tooltip: '局域网同步',
-            onPressed: () => unawaited(_openSync()),
-          ),
-          const SizedBox(width: 4),
-          _quietIcon(
-            icon: Icons.archive_outlined,
-            tooltip: '备份与恢复',
-            onPressed: () => unawaited(_openBackup()),
-          ),
-          const SizedBox(width: 4),
-          _quietIcon(
-            icon: Icons.add,
-            tooltip: '新建（Ctrl+N）',
-            onPressed: () => unawaited(_newNote()),
-          ),
-          const SizedBox(width: 4),
-          _quietIcon(
-            icon: Icons.lock_outline,
-            tooltip: '锁定（Ctrl+L）',
-            onPressed: () => unawaited(_lock()),
-          ),
-          const SizedBox(width: 4),
-          _quietIcon(
-            icon: Icons.info_outline,
-            tooltip: '关于与更新',
-            onPressed: () => unawaited(_openAbout()),
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 窄屏（手机竖屏 360dp）不显示品牌名：它只是个标记，不是信息，该给
+          // 工具按钮让位。六个图标在 360dp 上加上它就是溢出十几像素——而这种
+          // 溢出只有真机上才看得见，靠算间距迟早会再撞一次。
+          final showBrand = constraints.maxWidth >= 420;
+          return Row(
+            children: [
+              if (showBrand) ...[
+                Text(
+                  'passbook',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 3.4,
+                    fontWeight: FontWeight.w500,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: 10),
+              ],
+              Text('$count 条', style: theme.textTheme.labelSmall),
+              const Spacer(),
+              if (widget.updates?.hasUpdate ?? false) _updateHint(theme),
+              _quietIcon(
+                icon: Icons.sync_alt,
+                tooltip: '局域网同步',
+                onPressed: () => unawaited(_openSync()),
+              ),
+              const SizedBox(width: 2),
+              _quietIcon(
+                icon: Icons.archive_outlined,
+                tooltip: '备份与恢复',
+                onPressed: () => unawaited(_openBackup()),
+              ),
+              const SizedBox(width: 2),
+              _quietIcon(
+                icon: Icons.folder_outlined,
+                tooltip: '分组整理',
+                onPressed: () => unawaited(_openGroups()),
+              ),
+              const SizedBox(width: 2),
+              _quietIcon(
+                icon: Icons.add,
+                tooltip: '新建（Ctrl+N）',
+                onPressed: () => unawaited(_newNote()),
+              ),
+              const SizedBox(width: 2),
+              _quietIcon(
+                icon: Icons.lock_outline,
+                tooltip: '锁定（Ctrl+L）',
+                onPressed: () => unawaited(_lock()),
+              ),
+              const SizedBox(width: 2),
+              _quietIcon(
+                icon: Icons.info_outline,
+                tooltip: '关于与更新',
+                onPressed: () => unawaited(_openAbout()),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -721,8 +761,76 @@ class _HomePageState extends State<HomePage> {
       icon: Icon(icon, size: 16),
       color: theme.colorScheme.onSurfaceVariant,
       visualDensity: VisualDensity.compact,
-      padding: const EdgeInsets.all(8),
-      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+    );
+  }
+
+  /// 分组筛选条。一个分组都没有时整条不出现——空工具栏只会让人多点一次，
+  /// 还会把「这里原本有一行内容」的留白抢掉。
+  Widget _groupBar() {
+    final groups = widget.vault.groups;
+    if (groups.isEmpty) return const SizedBox.shrink();
+    final current = _filteredGroup();
+    return SizedBox(
+      height: 36,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 2),
+        children: [
+          _groupChip(
+            label: '全部',
+            selected: current == null,
+            onTap: () => setState(() => _groupFilterId = null),
+          ),
+          for (final group in groups)
+            _groupChip(
+              label: group.name,
+              count: group.allEntries.length,
+              selected: current?.uuid == group.uuid,
+              onTap: () => setState(() => _groupFilterId = group.uuid),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _groupChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    int? count,
+  }) {
+    final theme = Theme.of(context);
+    final soft = theme.colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(Palette.radius),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: selected ? theme.colorScheme.primary : soft,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+              if (count != null && count > 0) ...[
+                const SizedBox(width: 5),
+                Text(
+                  '$count',
+                  style: TextStyle(fontSize: 11, color: theme.hintColor),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -1141,6 +1249,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
                               cursorHeight: 26,
                               decoration: _bare.copyWith(hintText: '标题'),
                             ),
+                            _groupRow(theme),
                             const SizedBox(height: 14),
                             TextField(
                               controller: _body,
@@ -1289,6 +1398,113 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
           child: Divider(height: 0.5, color: theme.colorScheme.outline),
         ),
       ],
+    );
+  }
+
+  /// 分组一行，放在标题下面。
+  ///
+  /// 不塞进底部的附加信息里：它决定这条在列表里归哪儿，是打开就该看见的属性，
+  /// 不是写完才想起来补的字段。
+  Widget _groupRow(ThemeData theme) {
+    final group = widget.vault.groupOf(widget.entry);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(
+        onTap: _pickGroup,
+        borderRadius: BorderRadius.circular(Palette.radius),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.folder_outlined, size: 13, color: theme.hintColor),
+              const SizedBox(width: 6),
+              Text(
+                group?.name ?? ungroupedLabel,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              Icon(Icons.expand_more, size: 15, color: theme.hintColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 选分组。返回索引而不是对象：`null` 已经被「取消」占用了，而「未分组」
+  /// 本身也是一个合法选择——两者必须能分开。
+  Future<void> _pickGroup() async {
+    final groups = widget.vault.groups;
+    final current = widget.vault.groupOf(widget.entry);
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('放进哪个分组', style: TextStyle(fontSize: 15)),
+        children: [
+          _groupOption(
+            ctx: ctx,
+            value: 0,
+            label: ungroupedLabel,
+            selected: current == null,
+          ),
+          for (var i = 0; i < groups.length; i++)
+            _groupOption(
+              ctx: ctx,
+              value: i + 1,
+              label: groups[i].name,
+              count: groups[i].allEntries.length,
+              selected: current?.uuid == groups[i].uuid,
+            ),
+          if (groups.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 6, 24, 14),
+              child: Text(
+                '还没有分组。回列表页点右上角的文件夹图标建一个。',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1.6,
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final target = picked == 0 ? null : groups[picked - 1];
+    if (target?.uuid == current?.uuid) return;
+    widget.vault.moveEntry(widget.entry, target);
+    setState(() {});
+  }
+
+  Widget _groupOption({
+    required BuildContext ctx,
+    required int value,
+    required String label,
+    required bool selected,
+    int? count,
+  }) {
+    final theme = Theme.of(ctx);
+    return SimpleDialogOption(
+      onPressed: () => Navigator.of(ctx).pop(value),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: const TextStyle(fontSize: 14))),
+          if (count != null && count > 0) ...[
+            Text(
+              '$count 条',
+              style: TextStyle(fontSize: 11.5, color: theme.hintColor),
+            ),
+            const SizedBox(width: 8),
+          ],
+          if (selected)
+            Icon(Icons.check, size: 15, color: theme.colorScheme.primary),
+        ],
+      ),
     );
   }
 
