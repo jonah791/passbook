@@ -19,6 +19,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// ```
 ///
 /// 生成物在 `test/goldens/`，看完再提交。
+///
+/// ⚠ 已知装置缺陷：列表页（02/04）图上每行右侧的钥匙图标渲染成豆腐块——本机
+/// 图标字体缺该字形，是**装置侧**的问题。真机是否正常**未验**（没起窗口核过），
+/// 别据此下产品结论。
 void main() {
   late String vaultPath;
 

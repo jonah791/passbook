@@ -19,6 +19,9 @@ app/android/app/*.jks
 *.log
 .DS_Store
 
+# golden 比对失败时 Flutter 落的对比图（生成物，不是证据）
+app/test/failures/
+
 # 库文件绝不进版本库（这是密码本，一次误提交等于永久泄露）
 *.kdbx
 
