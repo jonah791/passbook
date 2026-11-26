@@ -49,6 +49,10 @@ class _HomePageState extends State<HomePage> {
   bool _autoLocked = false;
   bool _locking = false;
 
+  /// 最近一次在条目上按下的位置。长按回调本身不带坐标，而菜单要出现在
+  /// 手指（或光标）那儿——长按必然先经过按下，所以记这一格就够。
+  Offset _notePressure = Offset.zero;
+
   /// 这台设备有没有可用的生物识别。关的时候也留着它——
   /// 「能力」与「选择」是两件事：关掉指纹不等于硬件消失了。
   bool _bioSupported = false;
@@ -406,6 +410,158 @@ class _HomePageState extends State<HomePage> {
         await Clipboard.setData(const ClipboardData(text: ''));
       }
     });
+  }
+
+  // ───────────────────── 条目菜单（右键 / 长按） ─────────────────────
+
+  /// 条目菜单。桌面端右键、安卓长按，同一个入口。
+  ///
+  /// 菜单项按「这条有没有那个字段」出：空的复制项不给位置。删除放在最下面
+  /// 并标红——它是这一屏唯一不可逆的动作。
+  Future<void> _showEntryMenu(KdbxEntry entry, Offset position) async {
+    final vault = widget.vault;
+    final username = vault.fieldOf(entry, 'UserName');
+    final password = vault.fieldOf(entry, 'Password');
+    final url = vault.fieldOf(entry, 'URL');
+    final hasAnySecret =
+        username.isNotEmpty || password.isNotEmpty || url.isNotEmpty;
+    final size = MediaQuery.sizeOf(context);
+
+    final action = await showMenu<_EntryAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx.clamp(0.0, size.width),
+        position.dy.clamp(0.0, size.height),
+        (size.width - position.dx).clamp(0.0, size.width),
+        (size.height - position.dy).clamp(0.0, size.height),
+      ),
+      items: [
+        // 最常用的放最上：打开菜单的人十次有八次是要抄密码。
+        if (password.isNotEmpty)
+          _menuItem(_EntryAction.copyPassword, Icons.key_outlined, '复制密码'),
+        if (username.isNotEmpty)
+          _menuItem(
+            _EntryAction.copyUsername,
+            Icons.person_outline,
+            '复制用户名',
+          ),
+        if (url.isNotEmpty)
+          _menuItem(_EntryAction.copyUrl, Icons.link, '复制网址'),
+        if (hasAnySecret) const PopupMenuDivider(),
+        _menuItem(_EntryAction.edit, Icons.edit_outlined, '编辑'),
+        if (vault.groups.isNotEmpty)
+          _menuItem(_EntryAction.moveToGroup, Icons.folder_outlined, '移到分组'),
+        const PopupMenuDivider(),
+        _menuItem(
+          _EntryAction.delete,
+          Icons.delete_outline,
+          '删除',
+          danger: true,
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _EntryAction.copyPassword:
+        await _copy(password, '密码');
+      case _EntryAction.copyUsername:
+        await _copy(username, '用户名');
+      case _EntryAction.copyUrl:
+        await _copy(url, '网址');
+      case _EntryAction.edit:
+        await _openEditor(entry);
+      case _EntryAction.moveToGroup:
+        await _moveEntryToGroup(entry);
+      case _EntryAction.delete:
+        await _confirmDeleteEntry(entry);
+    }
+  }
+
+  PopupMenuItem<_EntryAction> _menuItem(
+    _EntryAction value,
+    IconData icon,
+    String label, {
+    bool danger = false,
+  }) {
+    final theme = Theme.of(context);
+    return PopupMenuItem<_EntryAction>(
+      value: value,
+      height: 44,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 16,
+            color: danger ? theme.colorScheme.error : theme.hintColor,
+          ),
+          const SizedBox(width: 12),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13.5,
+              color: danger
+                  ? theme.colorScheme.error
+                  : theme.colorScheme.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _moveEntryToGroup(KdbxEntry entry) async {
+    final vault = widget.vault;
+    final current = vault.groupOf(entry);
+    final picked = await showGroupPicker(context, vault, current);
+    if (!mounted || picked == null) return;
+    final groups = vault.groups;
+    final target = (picked == 0 || picked > groups.length)
+        ? null
+        : groups[picked - 1];
+    if (target?.uuid == current?.uuid) return;
+    vault.moveEntry(entry, target);
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已移到${target?.name ?? ungroupedLabel}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteEntry(KdbxEntry entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除这条？'),
+        content: const Text('删掉就找不回来了。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(
+              '取消',
+              style: TextStyle(
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(
+              '删除',
+              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final vault = widget.vault;
+    await vault.flushNow();
+    vault.deleteEntry(entry);
+    await vault.save();
+    if (mounted) setState(() {});
   }
 
   @override
@@ -871,6 +1027,12 @@ class _HomePageState extends State<HomePage> {
 
     return InkWell(
       onTap: () => _openEditor(entry),
+      onTapDown: (d) => _notePressure = d.globalPosition,
+      onLongPress: () => unawaited(_showEntryMenu(entry, _notePressure)),
+      // 桌面端右键、安卓长按：手势不同，动词相同，共用一份菜单。
+      // 写成两份迟早会缺项——而缺的那一项只有用户碰上才发现。
+      onSecondaryTapDown: (d) =>
+          unawaited(_showEntryMenu(entry, d.globalPosition)),
       // 悬停给一点点底色：回应人的动作，但别用 splash（纸上会显得脏）。
       hoverColor: theme.colorScheme.onSurface.withValues(alpha: 0.025),
       child: Padding(
@@ -1442,78 +1604,20 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     );
   }
 
-  /// 选分组。返回索引而不是对象：`null` 已经被「取消」占用了，而「未分组」
-  /// 本身也是一个合法选择——两者必须能分开。
+  /// 选分组，选完这一行跟着变。对话框本体与列表页共用（见 [showGroupPicker]），
+  /// 一处改两处生效——分成两份迟早一份改了另一份没改。
   Future<void> _pickGroup() async {
-    final groups = widget.vault.groups;
-    final current = widget.vault.groupOf(widget.entry);
-    final picked = await showDialog<int>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('放进哪个分组', style: TextStyle(fontSize: 15)),
-        children: [
-          _groupOption(
-            ctx: ctx,
-            value: 0,
-            label: ungroupedLabel,
-            selected: current == null,
-          ),
-          for (var i = 0; i < groups.length; i++)
-            _groupOption(
-              ctx: ctx,
-              value: i + 1,
-              label: groups[i].name,
-              count: groups[i].allEntries.length,
-              selected: current?.uuid == groups[i].uuid,
-            ),
-          if (groups.isEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 6, 24, 14),
-              child: Text(
-                '还没有分组。回列表页点右上角的文件夹图标建一个。',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  height: 1.6,
-                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
+    final vault = widget.vault;
+    final groups = vault.groups;
+    final current = vault.groupOf(widget.entry);
+    final picked = await showGroupPicker(context, vault, current);
     if (picked == null || !mounted) return;
-    final target = picked == 0 ? null : groups[picked - 1];
+    final target = (picked == 0 || picked > groups.length)
+        ? null
+        : groups[picked - 1];
     if (target?.uuid == current?.uuid) return;
-    widget.vault.moveEntry(widget.entry, target);
+    vault.moveEntry(widget.entry, target);
     setState(() {});
-  }
-
-  Widget _groupOption({
-    required BuildContext ctx,
-    required int value,
-    required String label,
-    required bool selected,
-    int? count,
-  }) {
-    final theme = Theme.of(ctx);
-    return SimpleDialogOption(
-      onPressed: () => Navigator.of(ctx).pop(value),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      child: Row(
-        children: [
-          Expanded(child: Text(label, style: const TextStyle(fontSize: 14))),
-          if (count != null && count > 0) ...[
-            Text(
-              '$count 条',
-              style: TextStyle(fontSize: 11.5, color: theme.hintColor),
-            ),
-            const SizedBox(width: 8),
-          ],
-          if (selected)
-            Icon(Icons.check, size: 15, color: theme.colorScheme.primary),
-        ],
-      ),
-    );
   }
 
   Widget _otpSection(ThemeData theme) {
@@ -1729,4 +1833,83 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       ),
     );
   }
+}
+
+/// 条目菜单里的动词。桌面右键与安卓长按共用同一份。
+enum _EntryAction {
+  copyPassword,
+  copyUsername,
+  copyUrl,
+  edit,
+  moveToGroup,
+  delete,
+}
+
+/// 选分组对话框。返回值：0 = 未分组，1..n = 第 n 个分组，`null` = 取消。
+///
+/// 用索引而不是组对象：`null` 已经留给「取消」了，而「未分组」本身也是一个
+/// 合法选择——这两个语义必须能分开，否则用户点了「未分组」会被当成没点。
+Future<int?> showGroupPicker(
+  BuildContext context,
+  VaultController vault,
+  KdbxGroup? current,
+) {
+  final groups = vault.groups;
+  return showDialog<int>(
+    context: context,
+    builder: (ctx) => SimpleDialog(
+      title: const Text('放进哪个分组', style: TextStyle(fontSize: 15)),
+      children: [
+        _groupOption(ctx, 0, ungroupedLabel, current == null),
+        for (var i = 0; i < groups.length; i++)
+          _groupOption(
+            ctx,
+            i + 1,
+            groups[i].name,
+            current?.uuid == groups[i].uuid,
+            count: groups[i].allEntries.length,
+          ),
+        if (groups.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 6, 24, 14),
+            child: Text(
+              '还没有分组。回列表页点右上角的文件夹图标建一个。',
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+Widget _groupOption(
+  BuildContext ctx,
+  int value,
+  String label,
+  bool selected, {
+  int? count,
+}) {
+  final theme = Theme.of(ctx);
+  return SimpleDialogOption(
+    onPressed: () => Navigator.of(ctx).pop(value),
+    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+    child: Row(
+      children: [
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 14))),
+        if (count != null && count > 0) ...[
+          Text(
+            '$count 条',
+            style: TextStyle(fontSize: 11.5, color: theme.hintColor),
+          ),
+          const SizedBox(width: 8),
+        ],
+        if (selected)
+          Icon(Icons.check, size: 15, color: theme.colorScheme.primary),
+      ],
+    ),
+  );
 }
