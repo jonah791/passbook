@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:kpasslib/kpasslib.dart';
 
 import '../core/idle_guard.dart';
+import '../core/password_gen.dart';
 import '../core/vault_controller.dart';
 
 /// 便签式界面：打开即列表，点加号就能记，自动保存。
@@ -425,6 +426,19 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     widget.vault.scheduleSave();
   }
 
+  /// 一键生成：不弹选项面板。要「换一个」就再点一次，比多选题快。
+  void _generate() {
+    final pwd = PasswordGenerator.generate();
+    _password.text = pwd; // 触发 listener → 落内存 + scheduleSave
+    setState(() => _reveal = true); // 生成即显示：主人要把它抄到别处
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已生成 20 位密码'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   Future<void> _delete() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -501,12 +515,22 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
               obscureText: !_reveal,
               decoration: InputDecoration(
                 labelText: '密码',
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _reveal ? Icons.visibility_off : Icons.visibility,
-                    size: 20,
-                  ),
-                  onPressed: () => setState(() => _reveal = !_reveal),
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: '生成密码',
+                      icon: const Icon(Icons.casino_outlined, size: 20),
+                      onPressed: _generate,
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _reveal ? Icons.visibility_off : Icons.visibility,
+                        size: 20,
+                      ),
+                      onPressed: () => setState(() => _reveal = !_reveal),
+                    ),
+                  ],
                 ),
               ),
             ),
