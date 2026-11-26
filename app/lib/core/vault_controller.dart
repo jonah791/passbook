@@ -28,9 +28,8 @@ class VaultController extends ChangeNotifier {
     final entries = _db?.root.allEntries ?? <KdbxEntry>[];
     // 新的在前：便签应用的心智是「最近记的在上面」。
     entries.sort(
-      (a, b) => b.times.creation.timeOrZero.compareTo(
-            a.times.creation.timeOrZero,
-          ),
+      (a, b) =>
+          b.times.creation.timeOrZero.compareTo(a.times.creation.timeOrZero),
     );
     return entries;
   }
@@ -75,7 +74,10 @@ class VaultController extends ChangeNotifier {
       final credentials = KdbxCredentials(
         password: ProtectedData.fromString(password),
       );
-      final db = KdbxDatabase.create(credentials: credentials, name: 'Passbook');
+      final db = KdbxDatabase.create(
+        credentials: credentials,
+        name: 'Passbook',
+      );
       db.createGroup(parent: db.root, name: '默认分组');
       _db = db;
       _filePath = path;
@@ -194,7 +196,10 @@ class VaultController extends ChangeNotifier {
 
   /// 列表预览：优先正文，其次用户名。
   String previewOf(KdbxEntry entry) {
-    final notes = fieldOf(entry, 'Notes').replaceAll(RegExp(r'\s+'), ' ').trim();
+    final notes = fieldOf(
+      entry,
+      'Notes',
+    ).replaceAll(RegExp(r'\s+'), ' ').trim();
     if (notes.isNotEmpty) return notes;
     final user = fieldOf(entry, 'UserName');
     if (user.isNotEmpty) return user;

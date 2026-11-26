@@ -5,7 +5,10 @@ import 'package:passbook/core/password_gen.dart';
 void main() {
   group('PasswordGenerator', () {
     test('长度符合请求', () {
-      expect(PasswordGenerator.generate().length, PasswordGenerator.defaultLength);
+      expect(
+        PasswordGenerator.generate().length,
+        PasswordGenerator.defaultLength,
+      );
       expect(PasswordGenerator.generate(length: 8).length, 8);
       expect(PasswordGenerator.generate(length: 64).length, 64);
     });
@@ -34,10 +37,7 @@ void main() {
     });
 
     test('两次生成不相同', () {
-      expect(
-        PasswordGenerator.generate(),
-        isNot(PasswordGenerator.generate()),
-      );
+      expect(PasswordGenerator.generate(), isNot(PasswordGenerator.generate()));
     });
   });
 }

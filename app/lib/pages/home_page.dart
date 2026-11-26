@@ -29,6 +29,7 @@ class _HomePageState extends State<HomePage> {
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   final _search = TextEditingController();
+  final _searchFocus = FocusNode();
   String _query = '';
   String? _error;
   bool _busy = false;
@@ -50,6 +51,7 @@ class _HomePageState extends State<HomePage> {
     _password.dispose();
     _confirm.dispose();
     _search.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -92,7 +94,15 @@ class _HomePageState extends State<HomePage> {
     if (ok) {
       _password.clear();
       widget.idleGuard.arm();
+      _focusSearchSoon();
     }
+  }
+
+  /// 解锁后把光标放进搜索框：打开就能打字找东西，少一次点击。
+  void _focusSearchSoon() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocus.requestFocus();
+    });
   }
 
   Future<void> _create() async {
@@ -120,6 +130,7 @@ class _HomePageState extends State<HomePage> {
       _password.clear();
       _confirm.clear();
       widget.idleGuard.arm();
+      _focusSearchSoon();
     }
   }
 
@@ -152,6 +163,15 @@ class _HomePageState extends State<HomePage> {
     await _openEditor(entry);
   }
 
+  /// Ctrl+F：聚焦搜索框并全选旧词，直接打字就是新查询。
+  void _focusSearch() {
+    _searchFocus.requestFocus();
+    _search.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _search.text.length,
+    );
+  }
+
   Future<void> _openEditor(KdbxEntry entry) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -165,9 +185,9 @@ class _HomePageState extends State<HomePage> {
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已复制$label（30 秒后自动清空）')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已复制$label（30 秒后自动清空）')));
     Timer(const Duration(seconds: 30), () async {
       final current = await Clipboard.getData(Clipboard.kTextPlain);
       if (current?.text == text) {
@@ -218,8 +238,8 @@ class _HomePageState extends State<HomePage> {
                     '无操作 ${widget.idleGuard.limit.inMinutes} 分钟，已自动锁定',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                 ],
                 const SizedBox(height: 28),
@@ -227,8 +247,7 @@ class _HomePageState extends State<HomePage> {
                   controller: _password,
                   obscureText: true,
                   autofocus: true,
-                  onSubmitted: (_) =>
-                      hasVault ? _unlock() : _create(),
+                  onSubmitted: (_) => hasVault ? _unlock() : _create(),
                   decoration: const InputDecoration(
                     labelText: '主密码',
                     border: OutlineInputBorder(),
@@ -251,9 +270,7 @@ class _HomePageState extends State<HomePage> {
                 ],
                 const SizedBox(height: 16),
                 FilledButton(
-                  onPressed: _busy
-                      ? null
-                      : (hasVault ? _unlock : _create),
+                  onPressed: _busy ? null : (hasVault ? _unlock : _create),
                   child: Text(hasVault ? '解锁' : '创建'),
                 ),
                 if (hasVault) ...[
@@ -262,9 +279,9 @@ class _HomePageState extends State<HomePage> {
                     onPressed: _busy
                         ? null
                         : () => setState(() {
-                              _creating = true;
-                              _error = null;
-                            }),
+                            _creating = true;
+                            _error = null;
+                          }),
                     child: const Text('用别的库？'),
                   ),
                 ],
@@ -291,76 +308,87 @@ class _HomePageState extends State<HomePage> {
     final entries = widget.vault.allEntries.where((entry) {
       if (_query.trim().isEmpty) return true;
       final q = _query.trim().toLowerCase();
-      return widget.vault
-              .fieldOf(entry, 'Title')
-              .toLowerCase()
-              .contains(q) ||
+      return widget.vault.fieldOf(entry, 'Title').toLowerCase().contains(q) ||
           widget.vault.fieldOf(entry, 'Notes').toLowerCase().contains(q) ||
           widget.vault.fieldOf(entry, 'UserName').toLowerCase().contains(q);
     }).toList();
 
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 16,
-        title: TextField(
-          controller: _search,
-          onChanged: (value) => setState(() => _query = value),
-          decoration: const InputDecoration(
-            hintText: '搜索',
-            border: InputBorder.none,
-            prefixIcon: Icon(Icons.search, size: 20),
-            isDense: true,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _focusSearch,
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>
+            unawaited(_newNote()),
+        const SingleActivator(LogicalKeyboardKey.keyL, control: true): () =>
+            unawaited(_lock()),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            titleSpacing: 16,
+            title: TextField(
+              controller: _search,
+              focusNode: _searchFocus,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: const InputDecoration(
+                hintText: '搜索',
+                border: InputBorder.none,
+                prefixIcon: Icon(Icons.search, size: 20),
+                isDense: true,
+              ),
+            ),
+            actions: [
+              IconButton(
+                tooltip: '锁定',
+                onPressed: () => _lock(),
+                icon: const Icon(Icons.lock_outline, size: 20),
+              ),
+            ],
+          ),
+          body: entries.isEmpty
+              ? const Center(child: Text('还没有条目，点右下角 + 记一条'))
+              : ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 96),
+                  itemCount: entries.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final entry = entries[index];
+                    final title = widget.vault.fieldOf(entry, 'Title');
+                    final preview = widget.vault.previewOf(entry);
+                    final hasPassword = widget.vault.hasPassword(entry);
+                    return ListTile(
+                      title: Text(
+                        title.isEmpty ? '无标题' : title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: preview.isEmpty
+                          ? null
+                          : Text(
+                              preview,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                      trailing: hasPassword
+                          ? IconButton(
+                              tooltip: '复制密码',
+                              icon: const Icon(Icons.key_outlined, size: 20),
+                              onPressed: () => _copy(
+                                widget.vault.fieldOf(entry, 'Password'),
+                                '密码',
+                              ),
+                            )
+                          : null,
+                      onTap: () => _openEditor(entry),
+                    );
+                  },
+                ),
+          floatingActionButton: FloatingActionButton(
+            onPressed: _newNote,
+            child: const Icon(Icons.add),
           ),
         ),
-        actions: [
-          IconButton(
-            tooltip: '锁定',
-            onPressed: () => _lock(),
-            icon: const Icon(Icons.lock_outline, size: 20),
-          ),
-        ],
-      ),
-      body: entries.isEmpty
-          ? const Center(child: Text('还没有条目，点右下角 + 记一条'))
-          : ListView.separated(
-              padding: const EdgeInsets.only(bottom: 96),
-              itemCount: entries.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final entry = entries[index];
-                final title = widget.vault.fieldOf(entry, 'Title');
-                final preview = widget.vault.previewOf(entry);
-                final hasPassword = widget.vault.hasPassword(entry);
-                return ListTile(
-                  title: Text(
-                    title.isEmpty ? '无标题' : title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: preview.isEmpty
-                      ? null
-                      : Text(
-                          preview,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                  trailing: hasPassword
-                      ? IconButton(
-                          tooltip: '复制密码',
-                          icon: const Icon(Icons.key_outlined, size: 20),
-                          onPressed: () => _copy(
-                            widget.vault.fieldOf(entry, 'Password'),
-                            '密码',
-                          ),
-                        )
-                      : null,
-                  onTap: () => _openEditor(entry),
-                );
-              },
-            ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _newNote,
-        child: const Icon(Icons.add),
       ),
     );
   }
@@ -392,8 +420,12 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     final e = widget.entry;
     _title = TextEditingController(text: widget.vault.fieldOf(e, 'Title'));
     _body = TextEditingController(text: widget.vault.fieldOf(e, 'Notes'));
-    _username = TextEditingController(text: widget.vault.fieldOf(e, 'UserName'));
-    _password = TextEditingController(text: widget.vault.fieldOf(e, 'Password'));
+    _username = TextEditingController(
+      text: widget.vault.fieldOf(e, 'UserName'),
+    );
+    _password = TextEditingController(
+      text: widget.vault.fieldOf(e, 'Password'),
+    );
     _url = TextEditingController(text: widget.vault.fieldOf(e, 'URL'));
     _showSecret = _password.text.isNotEmpty;
     _title.addListener(_onEdit);
@@ -465,82 +497,91 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        actions: [
-          IconButton(
-            tooltip: '删除',
-            onPressed: _delete,
-            icon: const Icon(Icons.delete_outline, size: 20),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).maybePop(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            actions: [
+              IconButton(
+                tooltip: '删除',
+                onPressed: _delete,
+                icon: const Icon(Icons.delete_outline, size: 20),
+              ),
+            ],
           ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-        children: [
-          TextField(
-            controller: _title,
-            autofocus: _title.text.isEmpty,
-            style: Theme.of(context).textTheme.headlineSmall,
-            decoration: const InputDecoration(
-              hintText: '标题',
-              border: InputBorder.none,
-            ),
-          ),
-          TextField(
-            controller: _body,
-            maxLines: null,
-            minLines: 8,
-            keyboardType: TextInputType.multiline,
-            decoration: const InputDecoration(
-              hintText: '记点什么…',
-              border: InputBorder.none,
-            ),
-          ),
-          const Divider(),
-          if (!_showSecret)
-            TextButton.icon(
-              onPressed: () => setState(() => _showSecret = true),
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('添加账号密码'),
-            )
-          else ...[
-            TextField(
-              controller: _username,
-              decoration: const InputDecoration(labelText: '用户名 / 账号'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _password,
-              obscureText: !_reveal,
-              decoration: InputDecoration(
-                labelText: '密码',
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: '生成密码',
-                      icon: const Icon(Icons.casino_outlined, size: 20),
-                      onPressed: _generate,
-                    ),
-                    IconButton(
-                      icon: Icon(
-                        _reveal ? Icons.visibility_off : Icons.visibility,
-                        size: 20,
-                      ),
-                      onPressed: () => setState(() => _reveal = !_reveal),
-                    ),
-                  ],
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+            children: [
+              TextField(
+                controller: _title,
+                autofocus: _title.text.isEmpty,
+                style: Theme.of(context).textTheme.headlineSmall,
+                decoration: const InputDecoration(
+                  hintText: '标题',
+                  border: InputBorder.none,
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _url,
-              decoration: const InputDecoration(labelText: '网址'),
-            ),
-          ],
-        ],
+              TextField(
+                controller: _body,
+                maxLines: null,
+                minLines: 8,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  hintText: '记点什么…',
+                  border: InputBorder.none,
+                ),
+              ),
+              const Divider(),
+              if (!_showSecret)
+                TextButton.icon(
+                  onPressed: () => setState(() => _showSecret = true),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('添加账号密码'),
+                )
+              else ...[
+                TextField(
+                  controller: _username,
+                  decoration: const InputDecoration(labelText: '用户名 / 账号'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _password,
+                  obscureText: !_reveal,
+                  decoration: InputDecoration(
+                    labelText: '密码',
+                    suffixIcon: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: '生成密码',
+                          icon: const Icon(Icons.casino_outlined, size: 20),
+                          onPressed: _generate,
+                        ),
+                        IconButton(
+                          icon: Icon(
+                            _reveal ? Icons.visibility_off : Icons.visibility,
+                            size: 20,
+                          ),
+                          onPressed: () => setState(() => _reveal = !_reveal),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _url,
+                  decoration: const InputDecoration(labelText: '网址'),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
