@@ -46,13 +46,44 @@ class VaultController extends ChangeNotifier {
     return group;
   }
 
+  /// 可能的库目录，按优先级：文档目录（方便同步到网盘）→ 应用数据目录。
+  Future<List<String>> _candidateDirs() async {
+    final dirs = <String>[];
+    for (final getter in [
+      getApplicationDocumentsDirectory,
+      getApplicationSupportDirectory,
+    ]) {
+      try {
+        dirs.add((await getter()).path);
+      } catch (_) {
+        // 拿不到这个目录就当它不存在，试下一个。
+      }
+    }
+    return dirs;
+  }
+
   /// 读上次打开的库路径（没有则 null）。
+  ///
+  /// 记住的路径只是**锚点**，不是真相：偏好项可能没写进去、库可能被挪走。
+  /// 锚点失效时回退到「按默认位置找现成的库」——不能让用户因为一个偏好项
+  /// 丢了就以为库没了、被迫重新建一个空库（那可是把密码本弄丢的观感）。
   Future<String?> readLastPath() async {
     final prefs = await SharedPreferences.getInstance();
-    final path = prefs.getString(_prefsKey);
-    if (path == null || path.isEmpty) return null;
-    if (!await File(path).exists()) return null;
-    return path;
+    final remembered = prefs.getString(_prefsKey);
+    if (remembered != null &&
+        remembered.isNotEmpty &&
+        await File(remembered).exists()) {
+      return remembered;
+    }
+
+    for (final dir in await _candidateDirs()) {
+      final candidate = '$dir${Platform.pathSeparator}passbook.kdbx';
+      if (await File(candidate).exists()) {
+        await _rememberPath(candidate);
+        return candidate;
+      }
+    }
+    return null;
   }
 
   Future<void> _rememberPath(String path) async {
@@ -67,18 +98,7 @@ class VaultController extends ChangeNotifier {
   /// 文档目录读得到、列得出，写进去却报「系统找不到指定的文件」。
   /// 只看目录存不存在会误判成可用，于是用户第一次建库就撞墙。
   Future<String> defaultVaultPath() async {
-    final candidates = <String>[];
-    for (final getter in [
-      getApplicationDocumentsDirectory,
-      getApplicationSupportDirectory,
-    ]) {
-      try {
-        candidates.add((await getter()).path);
-      } catch (_) {
-        // 拿不到这个目录就当它不存在，试下一个。
-      }
-    }
-    final picked = await pickWritable(candidates);
+    final picked = await pickWritable(await _candidateDirs());
     if (picked == null) {
       throw StateError('没有可写目录：文档与应用数据目录都写不进去');
     }

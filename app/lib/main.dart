@@ -51,6 +51,11 @@ Future<void> _runSelftest() async {
     }
     report.writeln('CANDIDATES=${candidates.join(' | ')}');
 
+    // 启动时到底会看到「解锁」还是「新建库」，就看这一行。返回 null 意味着界面
+    // 会当成还没有库——用户看到的就是「每次都要新建」。
+    final probeVault = VaultController();
+    report.writeln('LAST_PATH=${await probeVault.readLastPath() ?? '(null)'}');
+
     // 用独立文件名，绝不碰用户真正的 passbook.kdbx。
     final path = await VaultController.pickWritable(
       candidates,
