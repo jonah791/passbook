@@ -1,0 +1,20 @@
+# Flutter / Dart
+app/.dart_tool/
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/*.iml
+app/.idea/
+
+# 平台构建产物
+app/windows/flutter/ephemeral/
+app/android/.gradle/
+app/android/local.properties
+app/android/app/build/
+app/android/key.properties
+app/android/app/*.jks
+
+# 杂项
+*.log
+.DS_Store
