@@ -112,8 +112,18 @@ void main() {
       expect(script, contains('exit 1'));
     });
 
+    test('不用 Start-Process：环境里同时有 NO_PROXY 与 no_proxy 时它会直接崩', () {
+      final script = WindowsZipInstaller.scriptBody;
+      // 本机实测：Start-Process 复制环境变量时撞上大小写重复键，抛
+      // 「Item has already been added. Key in dictionary: 'NO_PROXY'」。
+      expect(script.contains('Start-Process'), isFalse);
+      expect(script, contains(r'[System.Diagnostics.Process]::Start($ExePath)'));
+      expect(script, contains(r'& robocopy.exe'));
+      expect(script, contains(r'$LASTEXITCODE'));
+    });
+
     test('替换完成后重新启动新版本', () {
-      expect(WindowsZipInstaller.scriptBody, contains(r'Start-Process -FilePath $ExePath'));
+      expect(WindowsZipInstaller.scriptBody, contains(r'::Start($ExePath)'));
     });
   });
 }

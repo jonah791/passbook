@@ -150,8 +150,8 @@ Windows（已跑通）→ **Android（2026-11-26 跑通：APK 构建 + 装机运
 - `app/` — Flutter 应用（`lib/core/` 逻辑、`lib/pages/` 界面、`test/` 判据）
   - `app/lib/core/update/` — 自动更新（`semver` 版本比较 / `release` 发布解析 / `update_service` 查询与下载校验 / `installer` 两端安装 / `update_controller` 状态机）
   - `app/tool/lan_peer.dart` — 命令行对端（无界面跑同一份同步协议，跨进程/跨设备联调用）
-  - `app/tool/update_probe.dart` — 更新探针（无窗口走真实 GitHub 链路：查 → 选产物 → 下载 → 校验）
-  - `app/tool/update_script_dump.dart` — 把随包发布的 PowerShell 更新脚本原样倒出来做离线冒烟
+  - `app/test/update_live.dart` — 真实链路探针（不进默认测试集；`flutter test test/update_live.dart` 真去问 GitHub、可选真下载）
+  - `app/test/dump_update_script.dart` — 把随包发布的 PowerShell 更新脚本原样倒出来做离线冒烟
   - `app/lib/lan_probe_main.dart` — 装机探针（`flutter build apk --target=…`，把结果打进 logcat）
 - `scripts/release.ps1` — 一键发布（按 pubspec 版本构建两端 → 生成 SHA256SUMS → `gh release create`）
 - `docs/` — 设计决定与判据

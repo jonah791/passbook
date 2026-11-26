@@ -55,11 +55,14 @@ class WindowsZipInstaller implements UpdateInstaller {
   static Future<Process> _spawnDetached(List<String> args) =>
       Process.start('powershell.exe', args, mode: ProcessStartMode.detached);
 
-  /// 脚本本体。四条纪律：
+  /// 脚本本体。五条纪律：
   /// ① 等旧进程真的退出（不等就覆盖被锁的 exe/dll，必失败）
   /// ② 先解压到暂存目录再整体覆盖（边下边解会在半途留下半套程序）
   /// ③ robocopy 的 0–7 都算成功，≥8 才是失败
   /// ④ 失败要留日志——GUI 启动的子进程没有控制台，不打日志就什么都不剩
+  /// ⑤ **不用 `Start-Process`**：它复制环境变量时遇到同时存在的 `NO_PROXY` 与 `no_proxy`
+  ///    会抛「Item has already been added」，脚本当场死掉（本机实测踩到）。
+  ///    调外部程序用 `&` 取 `$LASTEXITCODE`，拉新版本用 .NET 的 `Process.Start`。
   static const String scriptBody = r'''
 param(
   [Parameter(Mandatory=$true)][int]$WaitPid,
@@ -82,9 +85,8 @@ try {
       (Test-Path (Join-Path $entries[0].FullName 'passbook.exe'))) {
     $stage = $entries[0].FullName
   }
-  $rc = (Start-Process -FilePath 'robocopy.exe' `
-        -ArgumentList @($stage, $TargetDir, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/R:2', '/W:1') `
-        -Wait -PassThru -NoNewWindow).ExitCode
+  & robocopy.exe $stage $TargetDir /E /NFL /NDL /NJH /NJS /R:2 /W:1 | Out-Null
+  $rc = $LASTEXITCODE
   "robocopy 退出码 $rc" | Add-Content -Path $log
   if ($rc -ge 8) { throw "robocopy 失败，退出码 $rc" }
 } catch {
@@ -93,7 +95,7 @@ try {
 } finally {
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
-Start-Process -FilePath $ExePath
+[System.Diagnostics.Process]::Start($ExePath) | Out-Null
 "已启动新版本" | Add-Content -Path $log
 ''';
 }
