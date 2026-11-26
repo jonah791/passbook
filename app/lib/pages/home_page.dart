@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -206,7 +207,9 @@ class _HomePageState extends State<HomePage> {
   /// 用提示条而不是对话框——不打断，也不要他先回答才能继续用。
   void _offerBiometric(String password) {
     final bio = widget.biometric;
-    if (bio == null || _bioEnabled || !_bioSupported || password.isEmpty) return;
+    if (bio == null || _bioEnabled || !_bioSupported || password.isEmpty) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: const Text('要不要开启指纹解锁？之后按一下就进'),
@@ -286,11 +289,20 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// 解锁后把光标放进搜索框：打开就能打字找东西，少一次点击。
+  ///
+  /// **只在桌面端这么做。** 触屏上「聚焦输入框」就等于「弹出软键盘」，它一出现
+  /// 就盖住半屏列表——那不是省一次点击，是每次打开都先关一次键盘。
   void _focusSearchSoon() {
+    if (!_hasPointerKeyboard) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _searchFocus.requestFocus();
     });
   }
+
+  /// 这台设备有没有物理键盘可指望。桌面端算有；安卓外接键盘的情况代价只是
+  /// 少一次快捷键，比每次都挡半屏轻得多。
+  bool get _hasPointerKeyboard =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
   /// 锁定。先落盘再关库：正在编辑的内容不能因为「锁」而丢。
   Future<void> _lock({bool auto = false}) async {
@@ -333,9 +345,9 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _openGroups() async {
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => GroupPage(vault: widget.vault)));
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => GroupPage(vault: widget.vault)),
+    );
     if (mounted) setState(() {});
   }
 
@@ -346,6 +358,14 @@ class _HomePageState extends State<HomePage> {
       baseOffset: 0,
       extentOffset: _search.text.length,
     );
+  }
+
+  /// Esc / 点 ×：清空查询并把焦点交还列表，键盘跟着收起来。
+  void _clearSearch() {
+    if (_query.isEmpty && _search.text.isEmpty) return;
+    _search.clear();
+    _searchFocus.unfocus();
+    setState(() => _query = '');
   }
 
   Future<void> _openEditor(KdbxEntry entry) async {
@@ -419,6 +439,9 @@ class _HomePageState extends State<HomePage> {
   /// 菜单项按「这条有没有那个字段」出：空的复制项不给位置。删除放在最下面
   /// 并标红——它是这一屏唯一不可逆的动作。
   Future<void> _showEntryMenu(KdbxEntry entry, Offset position) async {
+    // 先收掉输入焦点。搜索框是这一屏唯一的可聚焦控件，菜单/对话框关掉时
+    // 焦点会回落到它身上、把键盘顶出来——而人此刻想看的是列表。
+    FocusScope.of(context).unfocus();
     final vault = widget.vault;
     final username = vault.fieldOf(entry, 'UserName');
     final password = vault.fieldOf(entry, 'Password');
@@ -440,17 +463,13 @@ class _HomePageState extends State<HomePage> {
         if (password.isNotEmpty)
           _menuItem(_EntryAction.copyPassword, Icons.key_outlined, '复制密码'),
         if (username.isNotEmpty)
-          _menuItem(
-            _EntryAction.copyUsername,
-            Icons.person_outline,
-            '复制用户名',
-          ),
-        if (url.isNotEmpty)
-          _menuItem(_EntryAction.copyUrl, Icons.link, '复制网址'),
+          _menuItem(_EntryAction.copyUsername, Icons.person_outline, '复制用户名'),
+        if (url.isNotEmpty) _menuItem(_EntryAction.copyUrl, Icons.link, '复制网址'),
         if (hasAnySecret) const PopupMenuDivider(),
         _menuItem(_EntryAction.edit, Icons.edit_outlined, '编辑'),
-        if (vault.groups.isNotEmpty)
-          _menuItem(_EntryAction.moveToGroup, Icons.folder_outlined, '移到分组'),
+        // 一个分组都没有时也给这一项：对话框里会告诉你去哪建。菜单里突然
+        // 少一项，人的第一反应是「刚才那个能点去哪了」。
+        _menuItem(_EntryAction.moveToGroup, Icons.folder_outlined, '移到分组'),
         const PopupMenuDivider(),
         _menuItem(
           _EntryAction.delete,
@@ -477,14 +496,14 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  PopupMenuItem<_EntryAction> _menuItem(
-    _EntryAction value,
+  PopupMenuItem<T> _menuItem<T>(
+    T value,
     IconData icon,
     String label, {
     bool danger = false,
   }) {
     final theme = Theme.of(context);
-    return PopupMenuItem<_EntryAction>(
+    return PopupMenuItem<T>(
       value: value,
       height: 44,
       child: Row(
@@ -531,10 +550,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _confirmDeleteEntry(KdbxEntry entry) async {
+    // 标题写进问句里：列表里相邻两条长得像的时候，只问「删除这条？」等于
+    // 让人凭记忆确认。说清是哪一条，误删才拦得住。
+    final title = widget.vault.fieldOf(entry, 'Title').trim();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('删除这条？'),
+        title: Text(title.isEmpty ? '删除这条？' : '删除「$title」？'),
         content: const Text('删掉就找不回来了。'),
         actions: [
           TextButton(
@@ -735,7 +757,10 @@ class _HomePageState extends State<HomePage> {
   // ───────────────────────── 列表 ─────────────────────────
 
   Widget _listScaffold() {
-    final entries = widget.vault.entriesOf(_filteredGroup()).where((entry) {
+    // 分层取数：先按分组筛出这一屏的范围，再按搜索词过滤。两层分开是因为
+    // 空态要说的话不一样——「这个分组还空着」和「没有匹配的条目」是两回事。
+    final inGroup = widget.vault.entriesOf(_filteredGroup());
+    final entries = inGroup.where((entry) {
       if (_query.trim().isEmpty) return true;
       final q = _query.trim().toLowerCase();
       return widget.vault.fieldOf(entry, 'Title').toLowerCase().contains(q) ||
@@ -743,51 +768,68 @@ class _HomePageState extends State<HomePage> {
           widget.vault.fieldOf(entry, 'UserName').toLowerCase().contains(q);
     }).toList();
 
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            _focusSearch,
-        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>
-            unawaited(_newNote()),
-        const SingleActivator(LogicalKeyboardKey.keyL, control: true): () =>
-            unawaited(_lock()),
+    return PopScope(
+      // 安卓习惯：正筛着分组或搜着东西时，返回键先退回「全部」，而不是直接
+      // 退出应用。直接退的话，人刚点进 Work 再按返回就没了——那是最容易被
+      // 骂「这软件怎么老自己关」的一种。
+      canPop: _groupFilterId == null && _query.isEmpty,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_query.isNotEmpty) {
+          _clearSearch();
+        } else {
+          setState(() => _groupFilterId = null);
+        }
       },
-      child: Focus(
-        autofocus: true,
-        child: Scaffold(
-          body: SafeArea(
-            child: Center(
-              child: ConstrainedBox(
-                // 一栏到底：页眉、搜索、列表全部同轴。多一套左边缘，
-                // 眼睛就要多校准一次——这是最常见的「生成感」来源。
-                constraints: const BoxConstraints(maxWidth: Palette.listWidth),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: Column(
-                    children: [
-                      _listHeader(entries.length),
-                      _searchRow(),
-                      _groupBar(),
-                      const Divider(height: 0.5),
-                      Expanded(
-                        child: entries.isEmpty
-                            ? _emptyState()
-                            : ListView.separated(
-                                padding: const EdgeInsets.only(
-                                  top: 4,
-                                  bottom: 96,
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+              _focusSearch,
+          const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>
+              unawaited(_newNote()),
+          const SingleActivator(LogicalKeyboardKey.keyL, control: true): () =>
+              unawaited(_lock()),
+          const SingleActivator(LogicalKeyboardKey.escape): _clearSearch,
+        },
+        child: Focus(
+          autofocus: true,
+          child: Scaffold(
+            body: SafeArea(
+              child: Center(
+                child: ConstrainedBox(
+                  // 一栏到底：页眉、搜索、列表全部同轴。多一套左边缘，
+                  // 眼睛就要多校准一次——这是最常见的「生成感」来源。
+                  constraints: const BoxConstraints(
+                    maxWidth: Palette.listWidth,
+                  ),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: Column(
+                      children: [
+                        _listHeader(entries.length, total: inGroup.length),
+                        _searchRow(),
+                        _groupBar(),
+                        const Divider(height: 0.5),
+                        Expanded(
+                          child: entries.isEmpty
+                              ? _emptyState()
+                              : ListView.separated(
+                                  padding: const EdgeInsets.only(
+                                    top: 4,
+                                    bottom: 96,
+                                  ),
+                                  itemCount: entries.length,
+                                  separatorBuilder: (_, _) => const Divider(
+                                    height: 0.5,
+                                    indent: 24,
+                                    endIndent: 24,
+                                  ),
+                                  itemBuilder: (context, index) =>
+                                      _noteRow(entries[index]),
                                 ),
-                                itemCount: entries.length,
-                                separatorBuilder: (_, _) => const Divider(
-                                  height: 0.5,
-                                  indent: 24,
-                                  endIndent: 24,
-                                ),
-                                itemBuilder: (context, index) =>
-                                    _noteRow(entries[index]),
-                              ),
-                      ),
-                    ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -798,7 +840,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _listHeader(int count) {
+  Widget _listHeader(int count, {required int total}) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 14, 8),
@@ -822,7 +864,11 @@ class _HomePageState extends State<HomePage> {
                 ),
                 const SizedBox(width: 10),
               ],
-              Text('$count 条', style: theme.textTheme.labelSmall),
+              // 筛着东西时把总量也报出来：只写「1 条」会让人以为库里只剩一条。
+              Text(
+                count == total ? '$count 条' : '$count / $total 条',
+                style: theme.textTheme.labelSmall,
+              ),
               const Spacer(),
               if (widget.updates?.hasUpdate ?? false) _updateHint(theme),
               _quietIcon(
@@ -952,6 +998,8 @@ class _HomePageState extends State<HomePage> {
                 count: group.allEntries.length,
                 selected: current?.uuid == group.uuid,
                 onTap: () => setState(() => _groupFilterId = group.uuid),
+                onMenu: (position) =>
+                    unawaited(_showGroupMenu(group, position)),
               ),
           ],
         ),
@@ -964,57 +1012,141 @@ class _HomePageState extends State<HomePage> {
     required bool selected,
     required VoidCallback onTap,
     int? count,
+    void Function(Offset position)? onMenu,
   }) {
     final theme = Theme.of(context);
     final soft = theme.colorScheme.onSurfaceVariant;
     return Padding(
       padding: const EdgeInsets.only(right: 6),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(Palette.radius),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          child: Row(
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: selected ? theme.colorScheme.primary : soft,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                ),
-              ),
-              if (count != null && count > 0) ...[
-                const SizedBox(width: 5),
+      // 用 Builder 拿这个 chip 自己的坐标：菜单要落在它下面一点，
+      // 而不是落在屏幕某处——多个 chip 共用一份状态会互相抢位置。
+      child: Builder(
+        builder: (chipContext) => InkWell(
+          onTap: onTap,
+          onLongPress: onMenu == null
+              ? null
+              : () => onMenu(_anchorBelow(chipContext)),
+          onSecondaryTapDown: onMenu == null
+              ? null
+              : (d) => onMenu(d.globalPosition),
+          borderRadius: BorderRadius.circular(Palette.radius),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            child: Row(
+              children: [
                 Text(
-                  '$count',
-                  style: TextStyle(fontSize: 11, color: theme.hintColor),
+                  label,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: selected ? theme.colorScheme.primary : soft,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  ),
                 ),
+                if (count != null && count > 0) ...[
+                  const SizedBox(width: 5),
+                  Text(
+                    '$count',
+                    style: TextStyle(fontSize: 11, color: theme.hintColor),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _searchRow() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 6),
-      child: TextField(
-        controller: _search,
-        focusNode: _searchFocus,
-        onChanged: (value) => setState(() => _query = value),
-        style: const TextStyle(fontSize: 14),
-        cursorHeight: 15,
-        decoration: const InputDecoration(
-          hintText: '搜索',
-          isDense: true,
-          contentPadding: EdgeInsets.symmetric(vertical: 6),
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
+  /// 某个控件正下方的那个点——长按弹菜单用它当锚点，菜单就不盖住被按的东西。
+  Offset _anchorBelow(BuildContext ctx) {
+    final box = ctx.findRenderObject();
+    if (box is! RenderBox) return Offset.zero;
+    final origin = box.localToGlobal(Offset.zero);
+    return Offset(origin.dx, origin.dy + box.size.height);
+  }
+
+  /// 分组条上右键 / 长按：改名、删掉。
+  ///
+  /// 与分组页里的那两个操作是同一套实现（[askGroupName] / [confirmDeleteGroup]），
+  /// 这里只是把它们搬到手边——整理分组不该每次都要先跳进一个二级页。
+  Future<void> _showGroupMenu(KdbxGroup group, Offset position) async {
+    FocusScope.of(context).unfocus();
+    final size = MediaQuery.sizeOf(context);
+    final action = await showMenu<_GroupAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        position.dx.clamp(0.0, size.width),
+        position.dy.clamp(0.0, size.height),
+        (size.width - position.dx).clamp(0.0, size.width),
+        (size.height - position.dy).clamp(0.0, size.height),
+      ),
+      items: [
+        _menuItem(_GroupAction.rename, Icons.edit_outlined, '改名'),
+        const PopupMenuDivider(),
+        _menuItem(
+          _GroupAction.delete,
+          Icons.delete_outline,
+          '删除分组',
+          danger: true,
         ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _GroupAction.rename:
+        final name = await askGroupName(
+          context,
+          title: '改个名字',
+          confirm: '改好',
+          initial: group.name,
+        );
+        if (name == null) return;
+        widget.vault.renameGroup(group, name);
+        setState(() {});
+      case _GroupAction.delete:
+        if (!await confirmDeleteGroup(context, group)) return;
+        // 正筛着这个分组时先退回「全部」：否则筛的组没了，列表会突然空掉。
+        if (_groupFilterId == group.uuid) _groupFilterId = null;
+        widget.vault.deleteGroup(group);
+        setState(() {});
+    }
+  }
+
+  Widget _searchRow() {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(24, 0, _query.isEmpty ? 24 : 12, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _search,
+              focusNode: _searchFocus,
+              onChanged: (value) => setState(() => _query = value),
+              style: const TextStyle(fontSize: 14),
+              cursorHeight: 15,
+              decoration: const InputDecoration(
+                hintText: '搜索',
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: 6),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+              ),
+            ),
+          ),
+          // 只在真能清的时候出现：常驻的 × 是个噪音，它没有别的作用。
+          if (_query.isNotEmpty)
+            IconButton(
+              onPressed: _clearSearch,
+              tooltip: '清除（Esc）',
+              iconSize: 15,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              splashRadius: 15,
+              icon: Icon(Icons.close, color: theme.hintColor),
+            ),
+        ],
       ),
     );
   }
@@ -1024,6 +1156,11 @@ class _HomePageState extends State<HomePage> {
     final title = widget.vault.fieldOf(entry, 'Title');
     final preview = widget.vault.previewOf(entry);
     final hasPassword = widget.vault.hasPassword(entry);
+    // 只在「全部」视图里缀分组名：已经按分组筛着的时候，每一行都写着同一个
+    // 名字，那不是信息，是噪音。
+    final groupName = _groupFilterId == null
+        ? widget.vault.groupOf(entry)?.name
+        : null;
 
     return InkWell(
       onTap: () => _openEditor(entry),
@@ -1056,10 +1193,16 @@ class _HomePageState extends State<HomePage> {
                           : theme.colorScheme.onSurface,
                     ),
                   ),
-                  if (preview.isNotEmpty) ...[
+                  if (preview.isNotEmpty || groupName != null) ...[
                     const SizedBox(height: 3),
                     Text(
-                      preview,
+                      // 分组名缀在预览后面，不另起一行：多一行会让每条记录都变高，
+                      // 而它是收件箱式列表，一屏能多看几条比什么都重要。
+                      groupName == null
+                          ? preview
+                          : (preview.isEmpty
+                                ? groupName
+                                : '$preview · $groupName'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -1090,22 +1233,41 @@ class _HomePageState extends State<HomePage> {
 
   Widget _emptyState() {
     final theme = Theme.of(context);
+    final query = _query.trim();
+    final group = _filteredGroup();
+
+    // 三种空是不一样的事：搜不到、这个分组还空着、整个库都还空着。
+    // 一律写「还什么都没记」是在骗人——尤其搜不到的时候，人以为自己的条目没了。
+    final String line;
+    final String action;
+    final VoidCallback onPressed;
+    if (query.isNotEmpty) {
+      line = '没有匹配「$query」的条目';
+      action = '清除搜索';
+      onPressed = _clearSearch;
+    } else if (group != null) {
+      line = '「${group.name}」还空着';
+      action = '记第一条进来';
+      onPressed = () => unawaited(_newNote());
+    } else {
+      line = '还什么都没记';
+      action = '记第一条';
+      onPressed = () => unawaited(_newNote());
+    }
+
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '还什么都没记',
+            line,
             style: TextStyle(
               fontSize: 13.5,
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
           const SizedBox(height: 4),
-          TextButton(
-            onPressed: () => unawaited(_newNote()),
-            child: const Text('记第一条'),
-          ),
+          TextButton(onPressed: onPressed, child: Text(action)),
         ],
       ),
     );
@@ -1332,10 +1494,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     await Clipboard.setData(ClipboardData(text: code));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('验证码已复制'),
-        duration: Duration(seconds: 2),
-      ),
+      const SnackBar(content: Text('验证码已复制'), duration: Duration(seconds: 2)),
     );
   }
 
@@ -1564,9 +1723,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
           ),
         ),
         const SizedBox(width: 10),
-        Expanded(
-          child: Divider(height: 0.5, color: theme.colorScheme.outline),
-        ),
+        Expanded(child: Divider(height: 0.5, color: theme.colorScheme.outline)),
       ],
     );
   }
@@ -1638,9 +1795,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
               height: 1.5,
               fontFamily: 'Consolas',
             ),
-            decoration: _bare.copyWith(
-              hintText: '粘贴 otpauth:// 链接，或直接给密钥',
-            ),
+            decoration: _bare.copyWith(hintText: '粘贴 otpauth:// 链接，或直接给密钥'),
             onSubmitted: (_) => _saveOtp(),
           ),
           const SizedBox(height: 10),
@@ -1844,6 +1999,9 @@ enum _EntryAction {
   moveToGroup,
   delete,
 }
+
+/// 分组条上的动词。与条目菜单同一套手势，只是对象不同。
+enum _GroupAction { rename, delete }
 
 /// 选分组对话框。返回值：0 = 未分组，1..n = 第 n 个分组，`null` = 取消。
 ///

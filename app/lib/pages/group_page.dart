@@ -39,13 +39,14 @@ class _GroupPageState extends State<GroupPage> {
   }
 
   Future<void> _create() async {
-    final name = await _askName(title: '新建分组', confirm: '建好');
+    final name = await askGroupName(context, title: '新建分组', confirm: '建好');
     if (name == null) return;
     widget.vault.createGroup(name);
   }
 
   Future<void> _rename(KdbxGroup group) async {
-    final name = await _askName(
+    final name = await askGroupName(
+      context,
       title: '改个名字',
       confirm: '改好',
       initial: group.name,
@@ -55,50 +56,9 @@ class _GroupPageState extends State<GroupPage> {
   }
 
   Future<void> _delete(KdbxGroup group) async {
-    final count = group.allEntries.length;
-    final hasChildren = group.groups.isNotEmpty;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('删掉「${group.name}」？'),
-        content: Text(
-          count == 0 && !hasChildren
-              ? '这个分组是空的，删掉不影响任何条目。'
-              : '分组里有 $count 条'
-                    '${hasChildren ? '，还有子分组' : ''}。'
-                    '删掉分组不会删掉这些东西——它们会回到「未分组」，'
-                    '之后还能再拖回别的分组里。',
-          style: const TextStyle(fontSize: 13.5, height: 1.6),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('算了'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(
-              '删掉',
-              style: TextStyle(color: Theme.of(ctx).colorScheme.error),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (ok ?? false) widget.vault.deleteGroup(group);
-  }
-
-  /// 问一个名字。返回 null = 取消或没填。
-  Future<String?> _askName({
-    required String title,
-    required String confirm,
-    String? initial,
-  }) {
-    return showDialog<String>(
-      context: context,
-      builder: (_) =>
-          _NameDialog(title: title, confirm: confirm, initial: initial),
-    );
+    if (await confirmDeleteGroup(context, group)) {
+      widget.vault.deleteGroup(group);
+    }
   }
 
   @override
@@ -178,12 +138,8 @@ class _GroupPageState extends State<GroupPage> {
                                   indent: 24,
                                   endIndent: 24,
                                 ),
-                                itemBuilder: (_, i) => _groupRow(
-                                  groups[i],
-                                  theme,
-                                  soft,
-                                  faint,
-                                ),
+                                itemBuilder: (_, i) =>
+                                    _groupRow(groups[i], theme, soft, faint),
                               ),
                       ),
                     ],
@@ -197,12 +153,7 @@ class _GroupPageState extends State<GroupPage> {
     );
   }
 
-  Widget _groupRow(
-    KdbxGroup group,
-    ThemeData theme,
-    Color soft,
-    Color faint,
-  ) {
+  Widget _groupRow(KdbxGroup group, ThemeData theme, Color soft, Color faint) {
     final count = group.allEntries.length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 4, 8, 4),
@@ -256,11 +207,7 @@ class _GroupPageState extends State<GroupPage> {
           children: [
             Text(
               '还没有分组',
-              style: TextStyle(
-                fontSize: 14,
-                letterSpacing: 1.2,
-                color: soft,
-              ),
+              style: TextStyle(fontSize: 14, letterSpacing: 1.2, color: soft),
             ),
             const SizedBox(height: 10),
             Text(
@@ -280,6 +227,61 @@ class _GroupPageState extends State<GroupPage> {
   }
 }
 
+/// 问一个分组名。返回 null = 取消或没填。
+///
+/// 列表页的分组条与分组页共用同一个对话框：同一个操作在两个地方长得不一样，
+/// 比功能缺失更容易让人怀疑自己做错了。分成两份实现，迟早一份改了另一份没改。
+Future<String?> askGroupName(
+  BuildContext context, {
+  required String title,
+  required String confirm,
+  String? initial,
+}) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) =>
+        _NameDialog(title: title, confirm: confirm, initial: initial),
+  );
+}
+
+/// 删分组的确认框。返回 true = 确认删除。
+///
+/// 文案必须说清「删的是壳、不是里面的东西」——这是这个操作唯一的风险点，
+/// 说反了人会以为条目也没了，于是不敢用。
+Future<bool> confirmDeleteGroup(BuildContext context, KdbxGroup group) async {
+  final count = group.allEntries.length;
+  final hasChildren = group.groups.isNotEmpty;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('删掉「${group.name}」？'),
+      content: Text(
+        count == 0 && !hasChildren
+            ? '这个分组是空的，删掉不影响任何条目。'
+            : '分组里有 $count 条'
+                  '${hasChildren ? '，还有子分组' : ''}。'
+                  '删掉分组不会删掉这些东西——它们会回到「未分组」，'
+                  '之后还能再拖回别的分组里。',
+        style: const TextStyle(fontSize: 13.5, height: 1.6),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: const Text('算了'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text(
+            '删掉',
+            style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+          ),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
+}
+
 /// 问名字的对话框。
 ///
 /// 输入框控制器必须由**这个 State** 持有并释放：曾经写成
@@ -287,11 +289,7 @@ class _GroupPageState extends State<GroupPage> {
 /// 动画还在重建那个 TextField，于是撞上「controller used after disposed」。
 /// 控制器活多久，得跟用它的那棵子树一样长。
 class _NameDialog extends StatefulWidget {
-  const _NameDialog({
-    required this.title,
-    required this.confirm,
-    this.initial,
-  });
+  const _NameDialog({required this.title, required this.confirm, this.initial});
 
   final String title;
   final String confirm;
