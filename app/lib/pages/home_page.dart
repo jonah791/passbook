@@ -772,25 +772,33 @@ class _HomePageState extends State<HomePage> {
     final groups = widget.vault.groups;
     if (groups.isEmpty) return const SizedBox.shrink();
     final current = _filteredGroup();
+    // 高度交给内容决定。曾经写成固定 36 高的横向 ListView，结果 Windows 上
+    // 「默认分组」的下半截被裁掉——中文字形比拉丁字母高，行高一旦超过那个
+    // 固定值，ListView 就会硬裁（clipBehavior 默认 hardEdge）。
+    //
+    // 另外必须自己撑满宽度：外面的 Column 横向默认居中，而 SingleChildScrollView
+    // 只肯索取内容宽度 ⇒ 不撑满时整排分组名会跑到屏幕正中间，跟列表的左边缘脱开。
     return SizedBox(
-      height: 36,
-      child: ListView(
+      width: double.infinity,
+      child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 2),
-        children: [
-          _groupChip(
-            label: '全部',
-            selected: current == null,
-            onTap: () => setState(() => _groupFilterId = null),
-          ),
-          for (final group in groups)
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+        child: Row(
+          children: [
             _groupChip(
-              label: group.name,
-              count: group.allEntries.length,
-              selected: current?.uuid == group.uuid,
-              onTap: () => setState(() => _groupFilterId = group.uuid),
+              label: '全部',
+              selected: current == null,
+              onTap: () => setState(() => _groupFilterId = null),
             ),
-        ],
+            for (final group in groups)
+              _groupChip(
+                label: group.name,
+                count: group.allEntries.length,
+                selected: current?.uuid == group.uuid,
+                onTap: () => setState(() => _groupFilterId = group.uuid),
+              ),
+          ],
+        ),
       ),
     );
   }
