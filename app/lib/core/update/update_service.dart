@@ -23,6 +23,7 @@ class UpdateCheck {
     this.release,
     this.asset,
     this.message,
+    this.viaRedirect = false,
   });
 
   const UpdateCheck.failed(String reason, {this.current})
@@ -30,7 +31,8 @@ class UpdateCheck {
         latest = null,
         release = null,
         asset = null,
-        message = reason;
+        message = reason,
+        viaRedirect = false;
 
   final UpdateCheckKind kind;
   final SemVer? current;
@@ -38,6 +40,9 @@ class UpdateCheck {
   final ReleaseInfo? release;
   final ReleaseAsset? asset;
   final String? message;
+
+  /// 是否走了「发布页重定向」的兜底路径（API 被限流时）。
+  final bool viaRedirect;
 
   bool get hasUpdate => kind == UpdateCheckKind.updateAvailable;
   bool get failed => kind == UpdateCheckKind.failed;
@@ -59,9 +64,11 @@ class UpdateService {
     UpdateTarget? target,
     HttpClient Function()? clientFactory,
     Uri? latestUri,
+    Uri? repoPage,
     this.timeout = const Duration(seconds: 15),
   })  : target = target ?? UpdateTarget.current,
         _latestUri = latestUri ?? kLatestReleaseUri,
+        _repoPage = repoPage ?? kRepoUri,
         _clientFactory = clientFactory ?? HttpClient.new;
 
   final String currentVersion;
@@ -69,6 +76,9 @@ class UpdateService {
 
   /// 只在测试里指向本地端点；生产固定是 [kLatestReleaseUri]。
   final Uri _latestUri;
+
+  /// 仓库网页根地址；API 被限流时用它走「发布页重定向」兜底。
+  final Uri _repoPage;
 
   final Duration timeout;
   final HttpClient Function() _clientFactory;
@@ -98,9 +108,15 @@ class UpdateService {
       final body = await response.transform(utf8.decoder).join().timeout(timeout);
 
       if (response.statusCode != 200) {
+        // 403/429 = 匿名配额用完（按出口 IP 计，共享代理下很常见）。
+        // 这时改用发布页重定向查版本——那条路不占 API 配额。
+        if (response.statusCode == 403 || response.statusCode == 429) {
+          final fallback = await _checkViaRedirect(current, target);
+          if (fallback != null) return fallback;
+        }
         final hint = switch (response.statusCode) {
           404 => '仓库或发布还不存在',
-          403 => 'GitHub 限制了请求频率，稍后再试',
+          403 || 429 => 'GitHub 限制了请求频率，稍后再试',
           301 || 302 => '仓库地址变了（改过名或换过账号）',
           _ => 'HTTP ${response.statusCode}',
         };
@@ -148,6 +164,58 @@ class UpdateService {
       return UpdateCheck.failed('检查失败：TLS 握手失败（代理或证书拦截？）', current: current);
     } on FormatException {
       return UpdateCheck.failed('检查失败：返回内容不是合法 JSON', current: current);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// API 被限流时的兜底：读 `…/releases/latest` 的 302 Location 拿 tag。
+  ///
+  /// 不占 API 配额；代价是拿不到发布说明与产物大小。返回 null 表示兜底也失败——
+  /// 调用方要把原始的 403 如实报出去，**不要**用空结果冒充「已是最新」。
+  Future<UpdateCheck?> _checkViaRedirect(SemVer current, UpdateTarget target) async {
+    final base = _repoPage.toString().replaceAll(RegExp(r'/+$'), '');
+    final client = _clientFactory();
+    try {
+      client.connectionTimeout = timeout;
+      final request = await client.getUrl(Uri.parse('$base/releases/latest')).timeout(timeout);
+      request.headers.set(
+        HttpHeaders.userAgentHeader,
+        'passbook/$currentVersion (+$kRepoUri)',
+      );
+      request.followRedirects = false;
+      final response = await request.close().timeout(timeout);
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      await response.drain<void>();
+      if (location == null || response.statusCode < 300 || response.statusCode >= 400) {
+        return null;
+      }
+      final tag = ReleaseInfo.tagFromReleaseLocation(Uri.parse(location));
+      final latest = SemVer.tryParse(tag);
+      if (tag == null || latest == null) return null;
+
+      final release = ReleaseInfo.forTagFromRepo(_repoPage, tag);
+      if (!latest.isNewerThan(current)) {
+        return UpdateCheck(
+          kind: UpdateCheckKind.upToDate,
+          current: current,
+          latest: latest,
+          release: release,
+          viaRedirect: true,
+        );
+      }
+      final asset = release.assetFor(target);
+      if (asset == null) return null;
+      return UpdateCheck(
+        kind: UpdateCheckKind.updateAvailable,
+        current: current,
+        latest: latest,
+        release: release,
+        asset: asset,
+        viaRedirect: true,
+      );
+    } on Exception {
+      return null;
     } finally {
       client.close(force: true);
     }

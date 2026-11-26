@@ -21,11 +21,15 @@ void main() {
   late HttpServer server;
   late String checksumBody;
   var latestHits = 0;
+  var pageHits = 0;
+  var apiRateLimited = false;
   var tag = 'v9.9.9';
 
   setUp(() async {
     tag = 'v9.9.9';
     latestHits = 0;
+    pageHits = 0;
+    apiRateLimited = false;
     checksumBody = '$goodSha  passbook-android.apk\n';
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((HttpRequest request) async {
@@ -34,6 +38,12 @@ void main() {
       switch (request.uri.path) {
         case '/releases/latest':
           latestHits++;
+          if (apiRateLimited) {
+            // 复刻真实形状：匿名配额用完后 GitHub 回 403 而不是 429
+            response.statusCode = 403;
+            response.write('{"message":"API rate limit exceeded"}');
+            break;
+          }
           response.headers.contentType = ContentType.json;
           response.write(jsonEncode({
             'tag_name': tag,
@@ -60,6 +70,22 @@ void main() {
         case '/SHA256SUMS.txt':
           response.write(checksumBody);
           break;
+        // ── 兜底路径：发布页重定向（不占 API 配额）──
+        case '/repo/releases/latest':
+          pageHits++;
+          response.statusCode = 302;
+          response.headers.set(
+            HttpHeaders.locationHeader,
+            '$base/repo/releases/tag/$tag',
+          );
+          break;
+        case '/repo/releases/download/v9.9.9/passbook-android.apk':
+        case '/repo/releases/download/v9.9.9/passbook-windows-x64.zip':
+          response.add(payload);
+          break;
+        case '/repo/releases/download/v9.9.9/SHA256SUMS.txt':
+          response.write(checksumBody);
+          break;
         default:
           response.statusCode = 404;
       }
@@ -76,6 +102,7 @@ void main() {
       currentVersion: version,
       target: UpdateTarget.android,
       latestUri: Uri.parse('http://127.0.0.1:${server.port}$path'),
+      repoPage: Uri.parse('http://127.0.0.1:${server.port}/repo'),
       timeout: const Duration(seconds: 5),
     );
   }
@@ -205,6 +232,46 @@ void main() {
           contains('大小异常'),
         )),
       );
+    });
+  });
+
+  group('API 被限流时的兜底', () {
+    test('403 改走发布页重定向，仍能报出新版本并选中产物', () async {
+      apiRateLimited = true;
+      final result = await buildService().check();
+      expect(result.kind, UpdateCheckKind.updateAvailable);
+      expect(result.viaRedirect, isTrue);
+      expect(result.latest?.toString(), '9.9.9');
+      expect(result.asset?.name, 'passbook-android.apk');
+      expect(latestHits, 1);
+      expect(pageHits, 1);
+    });
+
+    test('兜底路径下摘要仍来自 SHA256SUMS.txt，下载照过校验', () async {
+      apiRateLimited = true;
+      final service = buildService();
+      final result = await service.check();
+      final file = await service.download(
+        release: result.release!,
+        asset: result.asset!,
+      );
+      expect(await file.readAsBytes(), payload);
+      await file.delete();
+    });
+
+    test('兜底也失败时如实报 403，不冒充「已是最新」', () async {
+      apiRateLimited = true;
+      final service = UpdateService(
+        currentVersion: '1.0.0',
+        target: UpdateTarget.android,
+        latestUri: Uri.parse('http://127.0.0.1:${server.port}/releases/latest'),
+        // 没有这个仓库页 ⇒ 302 拿不到 ⇒ 兜底返回 null
+        repoPage: Uri.parse('http://127.0.0.1:${server.port}/nonexistent'),
+        timeout: const Duration(seconds: 5),
+      );
+      final result = await service.check();
+      expect(result.kind, UpdateCheckKind.failed);
+      expect(result.message, contains('限制'));
     });
   });
 
