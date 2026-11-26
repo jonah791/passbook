@@ -111,4 +111,33 @@ void main() {
     b.close();
     dir.deleteSync(recursive: true);
   });
+
+  test('线上走的是密文：导出的字节是 KDBX，且不含条目明文', () async {
+    final (a, b, dir) = await pair();
+
+    const marker = 'PLAINTEXT-MARKER-9f3a';
+    final e = a.addEntry();
+    a.updateField(e, 'Title', marker);
+    await a.save();
+
+    final bytes = await a.exportBytes();
+
+    // KDBX 4 魔数：03 D9 A2 9A 67 FB 4B B5
+    expect(
+      bytes.sublist(0, 8),
+      [0x03, 0xD9, 0xA2, 0x9A, 0x67, 0xFB, 0x4B, 0xB5],
+      reason: '同步传的必须是 KDBX 库文件本身，不是自己另编的明文格式',
+    );
+
+    final asText = String.fromCharCodes(bytes);
+    expect(
+      asText.contains(marker),
+      isFalse,
+      reason: '条目内容在线上必须是密文——明文出现在字节里说明哪里漏了',
+    );
+
+    a.close();
+    b.close();
+    dir.deleteSync(recursive: true);
+  });
 }
